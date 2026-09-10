@@ -158,6 +158,8 @@ void ReadSharedData()
 	wchar_t lines[SHARED_COUNT][256] = { 0 };
 	linesGlobal = lines;
 
+	lineCounter = 0;
+
 	SendMessage(list, LB_RESETCONTENT, 0, 0);
 
 	Emit32(USER_SHARED_DATA->TickCountLowDeprecated);
