@@ -414,7 +414,11 @@ VOID ReadImports(char* filename)
 		wchar_t namew[256] = { 0 };
 		int ii = 0;
 
-		fseek(f, offset, SEEK_SET);
+		if (fseek(f, offset, SEEK_SET))
+		{
+			DebugBreak();
+		}
+
 		while (1)
 		{
 			if (fread(&name[ii], 1, 1, f) != 1) break;
@@ -434,6 +438,81 @@ VOID ReadImports(char* filename)
 		);
 
 		SendMessage(list, LB_ADDSTRING, 0, (LPARAM)namew);
+
+
+		DWORD iatOffset = RvaToFileOffset(sections, ntHdr.FileHeader.NumberOfSections, descriptors[i].OriginalFirstThunk);
+		IMAGE_THUNK_DATA thunks[256] = { 0 };
+		int thunkIndex = 0;
+
+		if (fseek(f, iatOffset, SEEK_SET))
+		{
+			DebugBreak();
+		}
+
+		while (fread(&thunks[thunkIndex], sizeof(IMAGE_THUNK_DATA), 1, f) == 1 && thunks[thunkIndex].u1.AddressOfData != 0)
+		{
+#if defined(_M_AMD64) || defined(_M_ARM64)
+			if( (thunks[thunkIndex].u1.Ordinal >> 63) == 1)
+#elif defined(_M_IX86) || defined(_M_ARM)
+			if ((thunks[thunkIndex].u1.Ordinal >> 31) == 1)
+#endif
+			{
+				/* Imported by ordinal */
+				int ordinal = thunks[thunkIndex].u1.AddressOfData & 0xFFFF;
+				wchar_t importNameW[256] = { 0 };
+
+				swprintf(importNameW, 256, L"- @%u", ordinal);
+
+				SendMessage(list, LB_ADDSTRING, 0, (LPARAM)importNameW);
+			}
+			else {
+				/* Imported by name */
+				int nameRva = thunks[thunkIndex].u1.AddressOfData & 0x3FFFFFFF;
+				DWORD importNameOffset = RvaToFileOffset(sections, ntHdr.FileHeader.NumberOfSections, nameRva) + 2; // + 2 Hint
+
+				char importName[256] = { 0 };
+				wchar_t importNameW[256] = { 0 };
+				int importNameIndex = 0;
+
+				if (fseek(f, importNameOffset, SEEK_SET))
+				{
+					DebugBreak();
+				}
+
+				while (fread(&importName[importNameIndex], 1, 1, f) == 1 && importNameIndex < 256 && importName[importNameIndex] != 0)
+				{
+					importNameIndex++;
+				}
+
+				/* Reset file pointer for next thunk */
+				if (fseek(f, iatOffset + thunkIndex * sizeof(IMAGE_THUNK_DATA), SEEK_SET))
+				{
+					DebugBreak();
+				}
+
+
+				MultiByteToWideChar(
+					CP_ACP,
+					0,
+					importName,
+					strlen(importName),
+					importNameW,
+					256
+				);
+
+				wchar_t res[256] = { 0 };
+				swprintf(res, 256, L"- %s", importNameW);
+
+				SendMessage(list, LB_ADDSTRING, 0, (LPARAM)res);
+
+			}
+
+			
+
+
+			thunkIndex++;
+		}
+
 
 	}
 
