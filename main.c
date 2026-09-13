@@ -451,12 +451,8 @@ int ReadImports(char* filename, HWND list)
 			goto cleanup4;
 		}
 
-		while (1)
+		while (ii < 256 && fread(&name[ii], 1, 1, f) == 1 && name[ii] != 0)
 		{
-			if (fread(&name[ii], 1, 1, f) != 1) break;
-
-			if (name[ii] == 0) break;
-
 			ii++;
 		}
 		
@@ -482,7 +478,7 @@ int ReadImports(char* filename, HWND list)
 			goto cleanup4;
 		}
 
-		while (fread(&thunks[thunkIndex], sizeof(IMAGE_THUNK_DATA), 1, f) == 1 && thunks[thunkIndex].u1.AddressOfData != 0)
+		while (thunkIndex < 256 &&  fread(&thunks[thunkIndex], sizeof(IMAGE_THUNK_DATA), 1, f) == 1 && thunks[thunkIndex].u1.AddressOfData != 0)
 		{
 #if defined(_M_AMD64) || defined(_M_ARM64)
 			if( (thunks[thunkIndex].u1.Ordinal >> 63) == 1)
@@ -513,7 +509,7 @@ int ReadImports(char* filename, HWND list)
 					goto cleanup4;
 				}
 
-				while (fread(&importName[importNameIndex], 1, 1, f) == 1 && importNameIndex < 256 && importName[importNameIndex] != 0)
+				while (importNameIndex < 256 && fread(&importName[importNameIndex], 1, 1, f) == 1 && importName[importNameIndex] != 0)
 				{
 					importNameIndex++;
 				}
@@ -621,7 +617,7 @@ int ApplyWindowStyle(WINDOW_DATA *data)
 	SetWindowTheme(data->main, L"", L"");
 	SetThemeAppProperties(0);
 
-
+	return 0;
 }
 
 LRESULT Wndproc(
@@ -636,12 +632,12 @@ LRESULT Wndproc(
 	case WM_CREATE:
 	{
 		WINDOW_DATA* data = malloc(sizeof(WINDOW_DATA));
-		memset(data, 0, sizeof(WINDOW_DATA));
 		if (!data)
 		{
 			MessageBoxW(unnamedParam1, L"Out of system memory.", L"Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
 			exit(1);
 		}
+		memset(data, 0, sizeof(WINDOW_DATA));
 
 		data->main = unnamedParam1;
 
@@ -767,6 +763,7 @@ LRESULT Wndproc(
 		{
 			MessageBoxW(unnamedParam1, L"Only a single file is accepted.", L"Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
 
+			DragFinish((HDROP)unnamedParam3);
 			break;
 		}
 
@@ -775,6 +772,7 @@ LRESULT Wndproc(
 		{
 			MessageBoxW(unnamedParam1, L"No dropped file received", L"Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
 
+			DragFinish((HDROP)unnamedParam3);
 			break;
 		}
 
@@ -832,6 +830,7 @@ LRESULT Wndproc(
 		{
 			ShowWindow(GetDlgItem(unnamedParam1, 102), SW_HIDE);
 			ShowWindow(GetDlgItem(unnamedParam1, 101), SW_SHOW);
+			ShowWindow(GetDlgItem(unnamedParam1, 100), SW_SHOW);
 		}
 
 
