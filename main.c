@@ -8,10 +8,17 @@
 
 #include <stdio.h>
 
-DWORD oldElements[4] = { 0 };
-BOOL hasBackup = 0;
+typedef struct _WINDOW_DATA
+{
+	HWND main;
+	HWND dropNotice;
+	HWND listBox;
+	HWND tabs;
+	HWND loadButton;
 
-HWND list = 0;
+	BOOL hasBackup;
+	DWORD oldColors[4];
+} WINDOW_DATA, *PWINDOW_DATA;
 
 #define SHARED_COUNT 112
 wchar_t* shared_names[] =
@@ -153,7 +160,7 @@ inline void EmitStr(wchar_t *val)
 	lineCounter++;
 }
 
-void ReadSharedData()
+void ReadSharedData(HWND list)
 {
 	wchar_t lines[SHARED_COUNT][256] = { 0 };
 	linesGlobal = lines;
@@ -306,8 +313,15 @@ DWORD RvaToFileOffset(IMAGE_SECTION_HEADER *s, DWORD sectionCount, DWORD rva)
 }
 
 
-VOID ReadImports(char* filename)
+#define ST_SUCCESS 0
+#define ST_OPEN_ERROR 1
+#define ST_NOT_IMAGE_ERROR 2
+#define ST_PARSE_ERROR 3
+#define ST_MEMORY_ERROR 4
+
+int ReadImports(char* filename, HWND list)
 {
+	int status = ST_SUCCESS;
 	FILE* f = NULL;
 	IMAGE_DOS_HEADER dosHdr = { 0 };
 	IMAGE_NT_HEADERS ntHdr = { 0 };
@@ -319,57 +333,67 @@ VOID ReadImports(char* filename)
 	f = fopen(filename, "rb");
 	if (!f)
 	{
-		fprintf(stderr, "%s\n", strerror(errno));
-		int a = errno;
-		DWORD winerr = GetLastError();
-		DebugBreak();
+		status = ST_OPEN_ERROR;
+		goto cleanup1;
 	}
 
 	result = fread(&dosHdr, 1, sizeof(IMAGE_DOS_HEADER), f);
 	if (result < sizeof(IMAGE_DOS_HEADER))
 	{
-		DebugBreak();
+		status = ST_OPEN_ERROR;
+		goto cleanup2;
 	}
 
 	if (dosHdr.e_magic != IMAGE_DOS_SIGNATURE)
 	{
 		/* Not an image */
-		DebugBreak();
+		status = ST_NOT_IMAGE_ERROR;
+		goto cleanup2;
 	}
 
 	if (fseek(f, dosHdr.e_lfanew, SEEK_SET))
 	{
 		/* No PE header */
-		DebugBreak();
+		status = ST_NOT_IMAGE_ERROR;
+		goto cleanup2;
 	}
 
 	if (fread(&ntHdr, 1, sizeof(IMAGE_NT_HEADERS), f) < sizeof(IMAGE_NT_HEADERS))
 	{
 		/* No PE header */
-		DebugBreak();
+		status = ST_NOT_IMAGE_ERROR;
+		goto cleanup2;
 	}
 
 	if (ntHdr.Signature != IMAGE_NT_SIGNATURE)
 	{
 		/* Not a PE */
-		DebugBreak();
+		status = ST_NOT_IMAGE_ERROR;
+		goto cleanup2;
 	}
 
 
 	if (fseek(f, dosHdr.e_lfanew + sizeof(IMAGE_NT_HEADERS), SEEK_SET))
 	{
 		/* No PE header */
-		DebugBreak();
+		status = ST_PARSE_ERROR;
+		goto cleanup2;
 	}
 
 	size_t sectionTableSize = ntHdr.FileHeader.NumberOfSections * sizeof(IMAGE_SECTION_HEADER);
 
 	sections = malloc(sectionTableSize);
+	if (!sections)
+	{
+		status = ST_MEMORY_ERROR;
+		goto cleanup2;
+	}
 
 	if (fread(sections, 1, sectionTableSize, f) < sectionTableSize)
 	{
 		/* Could not read sections */
-		DebugBreak();
+		status = ST_PARSE_ERROR;
+		goto cleanup3;
 	}
 
 	DWORD importVa = ntHdr.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
@@ -390,15 +414,22 @@ VOID ReadImports(char* filename)
 	if (fseek(f, importFileOff, SEEK_SET))
 	{
 		/* No import table */
-		DebugBreak();
+		status = ST_PARSE_ERROR;
+		goto cleanup3;
 	}
 
 	IMAGE_IMPORT_DESCRIPTOR *descriptors = malloc(importSize);
+	if (!descriptors)
+	{
+		status = ST_MEMORY_ERROR;
+		goto cleanup3;
+	}
 
 	if (fread(descriptors, 1, importSize, f) < importSize)
 	{
 		/* Could not read import descriptors */
-		DebugBreak();
+		status = ST_PARSE_ERROR;
+		goto cleanup4;
 	}
 
 	for (int i = 0; i < (importSize / 0x14); i++)
@@ -416,7 +447,8 @@ VOID ReadImports(char* filename)
 
 		if (fseek(f, offset, SEEK_SET))
 		{
-			DebugBreak();
+			status = ST_PARSE_ERROR;
+			goto cleanup4;
 		}
 
 		while (1)
@@ -446,7 +478,8 @@ VOID ReadImports(char* filename)
 
 		if (fseek(f, iatOffset, SEEK_SET))
 		{
-			DebugBreak();
+			status = ST_PARSE_ERROR;
+			goto cleanup4;
 		}
 
 		while (fread(&thunks[thunkIndex], sizeof(IMAGE_THUNK_DATA), 1, f) == 1 && thunks[thunkIndex].u1.AddressOfData != 0)
@@ -476,7 +509,8 @@ VOID ReadImports(char* filename)
 
 				if (fseek(f, importNameOffset, SEEK_SET))
 				{
-					DebugBreak();
+					status = ST_PARSE_ERROR;
+					goto cleanup4;
 				}
 
 				while (fread(&importName[importNameIndex], 1, 1, f) == 1 && importNameIndex < 256 && importName[importNameIndex] != 0)
@@ -487,7 +521,8 @@ VOID ReadImports(char* filename)
 				/* Reset file pointer for next thunk */
 				if (fseek(f, iatOffset + thunkIndex * sizeof(IMAGE_THUNK_DATA), SEEK_SET))
 				{
-					DebugBreak();
+					status = ST_PARSE_ERROR;
+					goto cleanup4;
 				}
 
 
@@ -516,43 +551,77 @@ VOID ReadImports(char* filename)
 
 	}
 
+cleanup4:
 	free(descriptors);
+cleanup3:
 	free(sections);
+
+cleanup2:
 	fclose(f);
+
+cleanup1:
+	return status;
 
 }
 
-HRESULT UpdateDesktop(HWND hwnd)
+int ApplyWindowStyle(WINDOW_DATA *data)
 {
-	HRESULT result = 0;
-	HTHUMBNAIL thumbnail = NULL;
 
-	result = DwmRegisterThumbnail(hwnd, FindWindow(L"Progman", NULL), &thumbnail);
-	if (SUCCEEDED(result))
+	enum DWMNCRENDERINGPOLICY renderingPolicy = DWMNCRP_DISABLED;
+	int result = DwmSetWindowAttribute(data->main, DWMWA_NCRENDERING_POLICY, &renderingPolicy, sizeof(enum DWMNCRENDERINGPOLICY));
+	if (result)
 	{
-
-		RECT dest = { 0 };
-		GetClientRect(hwnd, &dest);
-
-		dest.top += 26;
-		dest.left += 3;
-		dest.right += 3;
-		dest.bottom += 26;
-
-		DWM_THUMBNAIL_PROPERTIES properties = { 0 };
-		properties.dwFlags = DWM_TNP_RECTDESTINATION | DWM_TNP_VISIBLE | DWM_TNP_SOURCECLIENTAREAONLY;
-		properties.fSourceClientAreaOnly = FALSE;
-		properties.fVisible = TRUE;
-		properties.opacity = (255 * 70) / 100;
-		properties.rcDestination = dest;
-
-		result = DwmUpdateThumbnailProperties(thumbnail, &properties);
-		if (FAILED(result))
-		{
-			DebugBreak();
-		}
+		return 1;
 	}
-	return result;
+
+	COLORREF colors[4] = {
+			RGB(255, 0, 0),
+			RGB(135, 0, 0),
+			RGB(0, 255, 0),
+			RGB(0,0,0)
+	};
+
+	if (!data->hasBackup)
+	{
+		data->oldColors[0] = GetSysColor(COLOR_ACTIVECAPTION);
+		data->oldColors[1] = GetSysColor(COLOR_GRADIENTACTIVECAPTION);
+		data->oldColors[2] = GetSysColor(COLOR_CAPTIONTEXT);
+		data->oldColors[3] = GetSysColor(COLOR_WINDOW);
+		data->hasBackup = 1;
+	}
+
+
+	int elements[4] = { COLOR_ACTIVECAPTION, COLOR_GRADIENTACTIVECAPTION, COLOR_CAPTIONTEXT, COLOR_WINDOW };
+	if (!SetSysColors(3, elements, colors))
+	{
+		return 1;
+	}
+
+
+
+	RECT rect;
+	GetWindowRect(data->main, &rect);
+
+	int width = rect.right - rect.left;
+	int height = rect.bottom - rect.top;
+	HRGN rgn = CreateRectRgn(0, 0, width, height);
+
+	DWM_BLURBEHIND blur = { 0 };
+	blur.dwFlags = DWM_BB_ENABLE;
+	blur.fEnable = 1;
+	blur.hRgnBlur = NULL;
+	blur.fTransitionOnMaximized = 0;
+
+	result = DwmEnableBlurBehindWindow(data->main, &blur);
+	if (result)
+	{
+		return 1;
+	}
+
+	SetWindowTheme(data->main, L"", L"");
+	SetThemeAppProperties(0);
+
+
 }
 
 LRESULT Wndproc(
@@ -564,13 +633,106 @@ LRESULT Wndproc(
 {
 	switch (unnamedParam2)
 	{
+	case WM_CREATE:
+	{
+		WINDOW_DATA* data = malloc(sizeof(WINDOW_DATA));
+		memset(data, 0, sizeof(WINDOW_DATA));
+		if (!data)
+		{
+			MessageBoxW(unnamedParam1, L"Out of system memory.", L"Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+			exit(1);
+		}
+
+		data->main = unnamedParam1;
+
+		if (ApplyWindowStyle(data))
+		{
+			MessageBoxW(unnamedParam1, L"Could not apply window style.", L"Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+			exit(1);
+		}
+
+
+		data->loadButton = CreateWindow(
+			L"BUTTON",
+			L"Read KUSER_SHARED_DATA",
+			WS_TABSTOP | WS_CHILD | BS_DEFPUSHBUTTON,
+			10,         
+			10,         
+			200,        
+			30,       
+			unnamedParam1,
+			(HMENU)100,
+			GetWindowLongPtr(unnamedParam1, GWLP_HINSTANCE),
+			NULL);
+
+		data->listBox = CreateWindow(
+			L"LISTBOX",
+			NULL,
+			WS_CHILD | WS_BORDER | WS_VSCROLL,
+			10, 50, 460, 330,
+			unnamedParam1,
+			(HMENU)101,
+			GetWindowLongPtr(unnamedParam1, GWLP_HINSTANCE),
+			NULL
+		);
+
+		INITCOMMONCONTROLSEX comctl;
+		comctl.dwICC = ICC_TAB_CLASSES;
+		comctl.dwSize = sizeof(INITCOMMONCONTROLSEX);
+		if (!InitCommonControlsEx(&comctl))
+		{
+			MessageBoxW(unnamedParam1, L"Cannot load common controls.", L"Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+			exit(1);
+		}
+
+		RECT clientRect;
+		GetClientRect(unnamedParam1, &clientRect);
+		data->tabs = CreateWindow(
+			WC_TABCONTROL,
+			NULL,
+			WS_CHILD | WS_CLIPSIBLINGS | WS_VISIBLE,
+			0,
+			0,
+			clientRect.right,
+			clientRect.bottom,
+			unnamedParam1,
+			NULL,
+			GetWindowLongPtr(unnamedParam1, GWLP_HINSTANCE),
+			NULL);
+
+		data->dropNotice = CreateWindow(
+			L"STATIC",
+			L"Drop an executable file on to the window.",
+			WS_CHILD | WS_VISIBLE | SS_CENTER,
+			100,
+			200,
+			300,
+			30,
+			unnamedParam1,
+			(HMENU)102,
+			GetWindowLongPtr(unnamedParam1, GWLP_HINSTANCE),
+			NULL);
+
+		SetWindowLongPtr(unnamedParam1, GWLP_USERDATA, data);
+
+
+		DragAcceptFiles(unnamedParam1, TRUE);
+
+		break;
+	}
+
 	case WM_DESTROY:
 	{
-		if (hasBackup)
+		WINDOW_DATA* data = GetWindowLongPtr(unnamedParam1, GWLP_USERDATA);
+
+		if (data->hasBackup)
 		{
 			INT elements[4] = { COLOR_ACTIVECAPTION, COLOR_GRADIENTACTIVECAPTION, COLOR_CAPTIONTEXT, COLOR_WINDOW };
-			SetSysColors(4, elements, oldElements);
+			SetSysColors(4, elements, data->oldColors);
 		}
+
+
+		free(data);
 
 		PostQuitMessage(0);
 		return 0;
@@ -579,25 +741,104 @@ LRESULT Wndproc(
 
 	case WM_COMMAND:
 	{
+		WINDOW_DATA* data = GetWindowLongPtr(unnamedParam1, GWLP_USERDATA);
+
 		if (HIWORD(unnamedParam3) == BN_CLICKED)
 		{
 			switch (LOWORD(unnamedParam3))
 			{
 			case 100:
 				
-				ReadSharedData(list);
+				ReadSharedData(data->listBox);
 			}
 		}
 
 		break;
 	}
 
-	case WM_NCPAINT:
-	case WM_NCACTIVATE:
-	{	
-		return DefWindowProcW(unnamedParam1, unnamedParam2, unnamedParam3, unnamedParam4);
+	case WM_DROPFILES:
+	{
+		WINDOW_DATA* data = GetWindowLongPtr(unnamedParam1, GWLP_USERDATA);
+
+		DWORD fileCount = DragQueryFileW((HDROP)unnamedParam3, 0xFFFFFFFF, NULL, 0);
+		char file[MAX_PATH] = { 0 };
+
+		if (fileCount > 1)
+		{
+			MessageBoxW(unnamedParam1, L"Only a single file is accepted.", L"Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+
+			break;
+		}
+
+		DWORD bytesRead = DragQueryFileA((HDROP)unnamedParam3, 0, file, MAX_PATH);
+		if (!bytesRead)
+		{
+			MessageBoxW(unnamedParam1, L"No dropped file received", L"Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+
+			break;
+		}
+
+
+		DragFinish((HDROP)unnamedParam3);
+
+
+		int status = ReadImports(file, data->listBox);
+
+		/*
+		#define ST_SUCCESS 0
+		#define ST_OPEN_ERROR 1
+		#define ST_NOT_IMAGE_ERROR 2
+		#define ST_PARSE_ERROR 3
+		#define ST_MEMORY_ERROR 4
+		*/
+
+
+		if (status)
+		{
+			SendMessage(data->listBox, LB_RESETCONTENT, 0, 0);
+
+			switch (status)
+			{
+			case ST_OPEN_ERROR:
+			{
+				MessageBoxW(unnamedParam1, L"Error while opening the executable file.", L"Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+				break;
+			}
+
+			case ST_NOT_IMAGE_ERROR:
+			{
+				MessageBoxW(unnamedParam1, L"File is not a PE executable image.", L"Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+				break;
+			}
+
+			case ST_PARSE_ERROR:
+			{
+				MessageBoxW(unnamedParam1, L"Error while parsing PE executable image.", L"Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+				break;
+			}
+			case ST_MEMORY_ERROR:
+			{
+				MessageBoxW(unnamedParam1, L"Out of system memory", L"Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+				break;
+			}
+			default:
+			{
+				MessageBoxW(unnamedParam1, L"Invalid file parsing error code", L"Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+				break;
+			}
+			}
+		} 
+		else
+		{
+			ShowWindow(GetDlgItem(unnamedParam1, 102), SW_HIDE);
+			ShowWindow(GetDlgItem(unnamedParam1, 101), SW_SHOW);
+		}
+
+
 		break;
+
 	}
+
 	default:
 		return DefWindowProcW(unnamedParam1, unnamedParam2, unnamedParam3, unnamedParam4);
 
@@ -615,7 +856,7 @@ int WinMain(
 	int       nShowCmd
 )
 {
-	WNDCLASSEXW wc;
+	WNDCLASSEXW wc = { 0 };
 	wc.cbSize = sizeof(WNDCLASSEXW);
 	wc.style = CS_HREDRAW | CS_VREDRAW;
 	wc.lpfnWndProc = Wndproc;
@@ -646,121 +887,10 @@ int WinMain(
 		hInstance,
 		NULL);
 
-	enum DWMNCRENDERINGPOLICY renderingPolicy = DWMNCRP_DISABLED;
-
-	int result = DwmSetWindowAttribute(hwnd, DWMWA_NCRENDERING_POLICY, &renderingPolicy, sizeof(enum DWMNCRENDERINGPOLICY));
-	if (result)
-	{
-		DebugBreak();
-	}
-
-	BOOL rtlLayout = TRUE;
-	result = DwmSetWindowAttribute(hwnd, DWMWA_NONCLIENT_RTL_LAYOUT, &rtlLayout, sizeof(BOOL));
-	if (result)
-	{
-		DebugBreak();
-	}
-
-	COLORREF colors[4] = {
-				RGB(255, 0, 0),   
-				RGB(135, 0, 0),    
-				RGB(0, 255, 0), 
-				RGB(0,0,0)
-	};
-
-	if (!hasBackup)
-	{
-		oldElements[0] = GetSysColor(COLOR_ACTIVECAPTION);
-		oldElements[1] = GetSysColor(COLOR_GRADIENTACTIVECAPTION);
-		oldElements[2] = GetSysColor(COLOR_CAPTIONTEXT);
-		oldElements[3] = GetSysColor(COLOR_WINDOW);
-		hasBackup = 1;
-	}
-
-
-	int elements[4] = { COLOR_ACTIVECAPTION, COLOR_GRADIENTACTIVECAPTION, COLOR_CAPTIONTEXT, COLOR_WINDOW };
-	SetSysColors(3, elements, colors);
-
-	RECT rect;
-	GetWindowRect(hwnd, &rect);
-
-	int width = rect.right - rect.left;
-	int height = rect.bottom - rect.top;
-	HRGN rgn = CreateRectRgn(0, 0, width, height);
-
-	DWM_BLURBEHIND blur = { 0 };
-	blur.dwFlags = DWM_BB_ENABLE;
-	blur.fEnable = 1;
-	blur.hRgnBlur = NULL;
-	blur.fTransitionOnMaximized = 0;
-
-	result = DwmEnableBlurBehindWindow(hwnd, &blur);
-	if (result)
-	{
-		DebugBreak();
-	}
-
-	SetWindowTheme(hwnd, L"", L"");
-	SetThemeAppProperties(0);
-	
-	INITCOMMONCONTROLSEX comctl;
-	comctl.dwICC = ICC_TAB_CLASSES;
-	comctl.dwSize = sizeof(INITCOMMONCONTROLSEX);
-
-	if (!InitCommonControlsEx(&comctl))
-	{
-		DebugBreak();
-	}
-
-
-	HWND button = CreateWindow(
-		L"BUTTON",  
-		L"Read KUSER_SHARED_DATA",      
-		WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON,  
-		10,         // x 
-		10,         // y 
-		200,        //  width
-		30,        //  height
-		hwnd,     
-		(HMENU)100,   
-		hInstance,
-		NULL);      
-
-	list = CreateWindow(
-		L"LISTBOX",
-		NULL,
-		WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL,
-		10,50,460,330,
-		hwnd,
-		(HMENU)101,
-		hInstance,
-		NULL
-	);
-
-	RECT clientRect;
-	GetClientRect(hwnd, &clientRect);
-
-	HWND tab = CreateWindow(
-		WC_TABCONTROL,
-		NULL,
-		WS_CHILD | WS_CLIPSIBLINGS | WS_VISIBLE,
-		0,
-		0,
-		clientRect.right,
-		clientRect.bottom,
-		hwnd,
-		NULL,
-		hInstance,
-		NULL);
-
-
-	ReadImports("dwmtest.exe");
-
 	ShowWindow(hwnd, nShowCmd);
 	UpdateWindow(hwnd);
 
 	MSG msg;
-
 	while (GetMessageW(&msg, NULL, 0, 0) > 0) {
 		TranslateMessage(&msg);
 		DispatchMessageW(&msg);
