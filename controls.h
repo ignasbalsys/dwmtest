@@ -11,4 +11,4 @@
 #define IDC_IMPORT_TREEVIEW		(HMENU)(ID_BASE + 4)
 
 
-#endif
+#endif /* _CONTROLS_H */

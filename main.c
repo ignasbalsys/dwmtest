@@ -9,6 +9,7 @@
 #include <stdio.h>
 
 #include "controls.h"
+#include "hdrtab.h"
 
 typedef struct _WINDOW_DATA
 {
@@ -77,51 +78,116 @@ void ListViewAddItem(HWND list, int row, int col, wchar_t* text)
 	}
 }
 
+#define HEADER_VALUE_PRINT(format, value, row) memset(str, 0, wr * sizeof(wchar_t));  wr = swprintf(str, 1024, format, value);  ListViewAddItem(l, row, 1, str); 
+#define HEADER_VALUE_PRINT2(format, value, value1, row) memset(str, 0, wr * sizeof(wchar_t));  wr = swprintf(str, 1024, format, value, value1);  ListViewAddItem(l, row, 1, str); 
+
 int FillHeaderListView(HWND l, DWORD signature, IMAGE_FILE_HEADER *file, VOID *optional, DWORD magic)
 {
 	wchar_t str[1024] = { 0 };
 
-	ListViewAddItem(l, 0, 0, L"Signature");
+	for (int i = 0; i < sizeof(headerTabProperties) / sizeof(uintptr_t); i++)
+	{
+		if (i == 16 && magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+		{
+			continue;
+		}
 
-	ListViewAddItem(l, 1, 0, L"Machine");
-	ListViewAddItem(l, 2, 0, L"NumberOfSections");
-	ListViewAddItem(l, 3, 0, L"TimeDateStamp");
-	ListViewAddItem(l, 4, 0, L"PointerToSymbolTable");
-	ListViewAddItem(l, 5, 0, L"NumberOfSymbols");
-	ListViewAddItem(l, 6, 0, L"SizeOfOptionalHeader");
-	ListViewAddItem(l, 7, 0, L"Characteristics");
+		ListViewAddItem(l, i, 0, headerTabProperties[i]);
+	}
 
 	int wr = 0;
-	wr = swprintf(str, 1024, L"0x%x", signature);
-	ListViewAddItem(l, 0, 1, str);
+	int index = 0;
 
-	memset(str, 0, wr);
-	wr = swprintf(str, 1024, L"0x%x", file->Machine);
-	ListViewAddItem(l, 1, 1, str);
+	HEADER_VALUE_PRINT(L"0x%x", signature, index++);
+	HEADER_VALUE_PRINT(L"0x%x", file->Machine, index++);
+	HEADER_VALUE_PRINT(L"%d", file->NumberOfSections, index++);
+	HEADER_VALUE_PRINT(L"0x%x", file->TimeDateStamp, index++);
+	HEADER_VALUE_PRINT(L"0x%x", file->PointerToSymbolTable, index++);
+	HEADER_VALUE_PRINT(L"%d", file->NumberOfSymbols, index++);
+	HEADER_VALUE_PRINT(L"0x%x", file->SizeOfOptionalHeader, index++);
+	HEADER_VALUE_PRINT(L"0x%x", file->Characteristics, index++);
 
-	memset(str, 0, wr);
-	wr = swprintf(str, 1024, L"%d", file->NumberOfSections);
-	ListViewAddItem(l, 2, 1, str);
+	HEADER_VALUE_PRINT(L"0x%x", magic, index++);
 	
-	memset(str, 0, wr);
-	wr = swprintf(str, 1024, L"0x%x", file->TimeDateStamp);
-	ListViewAddItem(l, 3, 1, str);
+	IMAGE_DATA_DIRECTORY* dataDirectory = NULL;
+	if (magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+	{
+		IMAGE_OPTIONAL_HEADER32* op = (IMAGE_OPTIONAL_HEADER32*)optional;
 
-	memset(str, 0, wr);
-	wr = swprintf(str, 1024, L"0x%x", file->PointerToSymbolTable);
-	ListViewAddItem(l, 4, 1, str);
+		HEADER_VALUE_PRINT(L"0x%x", op->MajorLinkerVersion, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->MinorLinkerVersion, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfCode, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfInitializedData, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfUninitializedData, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->AddressOfEntryPoint, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->BaseOfCode, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->BaseOfData, index++);
 
-	memset(str, 0, wr);
-	wr = swprintf(str, 1024, L"%d", file->NumberOfSymbols);
-	ListViewAddItem(l, 5, 1, str);
+		HEADER_VALUE_PRINT(L"0x%x", op->ImageBase, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->SectionAlignment, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->FileAlignment, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->MajorOperatingSystemVersion, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->MinorOperatingSystemVersion, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->MajorImageVersion, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->MinorImageVersion, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->MajorSubsystemVersion, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->MinorSubsystemVersion, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->Win32VersionValue, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfImage, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfHeaders, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->CheckSum, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->Subsystem, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->DllCharacteristics, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfStackReserve, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfStackCommit, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfHeapReserve, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfHeapCommit, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->LoaderFlags, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->NumberOfRvaAndSizes, index++);
 
-	memset(str, 0, wr);
-	wr = swprintf(str, 1024, L"0x%x", file->SizeOfOptionalHeader);
-	ListViewAddItem(l, 6, 1, str);
+		dataDirectory = op->DataDirectory;
+	}
+	else
+	{
+		IMAGE_OPTIONAL_HEADER64* op = (IMAGE_OPTIONAL_HEADER64*)optional;
 
-	memset(str, 0, wr);
-	wr = swprintf(str, 1024, L"0x%x", file->Characteristics);
-	ListViewAddItem(l, 7, 1, str);
+		HEADER_VALUE_PRINT(L"0x%x", op->MajorLinkerVersion, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->MinorLinkerVersion, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfCode, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfInitializedData, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfUninitializedData, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->AddressOfEntryPoint, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->BaseOfCode, index++);
+
+		HEADER_VALUE_PRINT(L"0x%llx", op->ImageBase, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->SectionAlignment, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->FileAlignment, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->MajorOperatingSystemVersion, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->MinorOperatingSystemVersion, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->MajorImageVersion, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->MinorImageVersion, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->MajorSubsystemVersion, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->MinorSubsystemVersion, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->Win32VersionValue, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfImage, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfHeaders, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->CheckSum, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->Subsystem, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->DllCharacteristics, index++);
+		HEADER_VALUE_PRINT(L"0x%llx", op->SizeOfStackReserve, index++);
+		HEADER_VALUE_PRINT(L"0x%llx", op->SizeOfStackCommit, index++);
+		HEADER_VALUE_PRINT(L"0x%llx", op->SizeOfHeapReserve, index++);
+		HEADER_VALUE_PRINT(L"0x%llx", op->SizeOfHeapCommit, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->LoaderFlags, index++);
+		HEADER_VALUE_PRINT(L"0x%x", op->NumberOfRvaAndSizes, index++);
+
+		dataDirectory = op->DataDirectory;
+	}
+
+	for (int i = 0; i < 15; i++)
+	{
+		HEADER_VALUE_PRINT2(L"0x%x (%x bytes)", dataDirectory[i].VirtualAddress, dataDirectory[i].Size, index++);
+	}
 	
 	return 0;
 }
@@ -388,17 +454,12 @@ int ReadImports(char* filename, WINDOW_DATA *data)
 		TVINSERTSTRUCT imp = {0};
 		imp.hParent = data->treeRoot;
 		imp.hInsertAfter = TVI_FIRST;
-		imp.item.mask = TVIF_TEXT | TVIF_STATE | TVIF_PARAM;
+		imp.item.mask = TVIF_TEXT | TVIF_PARAM;
 		imp.item.pszText = namew;
 		imp.item.cchTextMax = lstrlenW(namew);
-		imp.item.state = TVIS_EXPANDED;
-		imp.item.stateMask = TVIS_EXPANDED;
 		imp.item.lParam = tItem;
 
 		HTREEITEM himp = SendMessage(data->tree, TVM_INSERTITEM, 0, &imp);
-
-		//SendMessage(list, LB_ADDSTRING, 0, (LPARAM)namew);
-
 
 		DWORD iatOffset = RvaToFileOffset(sections, FileHeader.NumberOfSections, descriptors[i].OriginalFirstThunk);
 		if (fseek(f, iatOffset, SEEK_SET))
@@ -459,11 +520,9 @@ int ReadImports(char* filename, WINDOW_DATA *data)
 					TVINSERTSTRUCT name = { 0 };
 					name.hParent = himp;
 					name.hInsertAfter = TVI_FIRST;
-					name.item.mask = TVIF_TEXT | TVIF_STATE | TVIF_PARAM;
+					name.item.mask = TVIF_TEXT | TVIF_PARAM;
 					name.item.pszText = importNameW;
 					name.item.cchTextMax = lstrlenW(importNameW);
-					name.item.state = TVIS_EXPANDED;
-					name.item.stateMask = TVIS_EXPANDED;
 					name.item.lParam = tItem;
 
 					SendMessage(data->tree, TVM_INSERTITEM, 0, &name);
@@ -519,11 +578,9 @@ int ReadImports(char* filename, WINDOW_DATA *data)
 					TVINSERTSTRUCT name = { 0 };
 					name.hParent = himp;
 					name.hInsertAfter = TVI_FIRST;
-					name.item.mask = TVIF_TEXT | TVIF_STATE | TVIF_PARAM;
+					name.item.mask = TVIF_TEXT | TVIF_PARAM;
 					name.item.pszText = importNameW;
 					name.item.cchTextMax = lstrlenW(importNameW);
-					name.item.state = TVIS_EXPANDED;
-					name.item.stateMask = TVIS_EXPANDED;
 					name.item.lParam = tItem;
 
 					SendMessage(data->tree, TVM_INSERTITEM, 0, &name);
@@ -532,11 +589,6 @@ int ReadImports(char* filename, WINDOW_DATA *data)
 
 				thunkIndex++;
 			}
-
-
-
-
-
 		}
 		else if (Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
 		{
@@ -585,11 +637,9 @@ int ReadImports(char* filename, WINDOW_DATA *data)
 					TVINSERTSTRUCT name = { 0 };
 					name.hParent = himp;
 					name.hInsertAfter = TVI_FIRST;
-					name.item.mask = TVIF_TEXT | TVIF_STATE | TVIF_PARAM;
+					name.item.mask = TVIF_TEXT | TVIF_PARAM;
 					name.item.pszText = importNameW;
 					name.item.cchTextMax = lstrlenW(importNameW);
-					name.item.state = TVIS_EXPANDED;
-					name.item.stateMask = TVIS_EXPANDED;
 					name.item.lParam = tItem;
 
 					SendMessage(data->tree, TVM_INSERTITEM, 0, &name);
@@ -645,11 +695,9 @@ int ReadImports(char* filename, WINDOW_DATA *data)
 					TVINSERTSTRUCT name = { 0 };
 					name.hParent = himp;
 					name.hInsertAfter = TVI_FIRST;
-					name.item.mask = TVIF_TEXT | TVIF_STATE | TVIF_PARAM;
+					name.item.mask = TVIF_TEXT | TVIF_PARAM;
 					name.item.pszText = importNameW;
 					name.item.cchTextMax = lstrlenW(importNameW);
-					name.item.state = TVIS_EXPANDED;
-					name.item.stateMask = TVIS_EXPANDED;
 					name.item.lParam = tItem;
 
 					SendMessage(data->tree, TVM_INSERTITEM, 0, &name);
@@ -1004,7 +1052,7 @@ LRESULT Wndproc(
 
 					wchar_t propertyName[256] = { 0 };
 					TVITEM tvi = { 0 };
-					tvi.mask = TVIF_PARAM | TVIF_TEXT;
+					tvi.mask = TVIF_PARAM | TVIF_TEXT ;
 					tvi.hItem = item;
 					tvi.pszText = propertyName;
 					tvi.cchTextMax = 256;
@@ -1185,7 +1233,6 @@ LRESULT Wndproc(
 		else
 		{
 			ShowWindow(GetDlgItem(unnamedParam1, IDC_MAIN_LABEL), SW_HIDE);
-			//ShowWindow(GetDlgItem(unnamedParam1, IDC_IMPORT_TREEVIEW), SW_SHOW);
 			ShowWindow(GetDlgItem(unnamedParam1, IDC_HEADER_LISTVIEW), SW_SHOW);
 			ShowWindow(GetDlgItem(unnamedParam1, IDC_MAIN_TABS), SW_SHOW);
 		}
