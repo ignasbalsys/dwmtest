@@ -15,10 +15,24 @@ typedef struct _WINDOW_DATA
 	HWND listBox;
 	HWND tabs;
 	HWND loadButton;
+	HWND tree;
+	HTREEITEM treeRoot;
 
 	BOOL hasBackup;
 	DWORD oldColors[4];
 } WINDOW_DATA, *PWINDOW_DATA;
+
+typedef enum TreeItemType {
+	Import = 1,
+	Thunk32,
+	Thunk64
+} TreeItemType;
+
+typedef struct _TREE_ITEM
+{
+	TreeItemType Type;
+	void* Data;
+} TREE_ITEM;
 
 #define SHARED_COUNT 112
 wchar_t* shared_names[] =
@@ -319,12 +333,16 @@ DWORD RvaToFileOffset(IMAGE_SECTION_HEADER *s, DWORD sectionCount, DWORD rva)
 #define ST_PARSE_ERROR 3
 #define ST_MEMORY_ERROR 4
 
-int ReadImports(char* filename, HWND list)
+int ReadImports(char* filename, HWND list, HWND tree, HTREEITEM root)
 {
 	int status = ST_SUCCESS;
 	FILE* f = NULL;
 	IMAGE_DOS_HEADER dosHdr = { 0 };
-	IMAGE_NT_HEADERS ntHdr = { 0 };
+
+	DWORD Signature = 0;
+	IMAGE_FILE_HEADER FileHeader = { 0 };
+	VOID* OptionalHeader = NULL;
+
 	size_t result = 0;
 	errno_t err;
 	IMAGE_SECTION_HEADER* sections = NULL;
@@ -337,8 +355,8 @@ int ReadImports(char* filename, HWND list)
 		goto cleanup1;
 	}
 
-	result = fread(&dosHdr, 1, sizeof(IMAGE_DOS_HEADER), f);
-	if (result < sizeof(IMAGE_DOS_HEADER))
+	result = fread(&dosHdr, sizeof(IMAGE_DOS_HEADER), 1, f);
+	if (result < 1)
 	{
 		status = ST_OPEN_ERROR;
 		goto cleanup2;
@@ -358,14 +376,14 @@ int ReadImports(char* filename, HWND list)
 		goto cleanup2;
 	}
 
-	if (fread(&ntHdr, 1, sizeof(IMAGE_NT_HEADERS), f) < sizeof(IMAGE_NT_HEADERS))
+	if (fread(&Signature, 1, 4, f) < 4)
 	{
 		/* No PE header */
 		status = ST_NOT_IMAGE_ERROR;
 		goto cleanup2;
 	}
 
-	if (ntHdr.Signature != IMAGE_NT_SIGNATURE)
+	if (Signature != IMAGE_NT_SIGNATURE)
 	{
 		/* Not a PE */
 		status = ST_NOT_IMAGE_ERROR;
@@ -373,73 +391,160 @@ int ReadImports(char* filename, HWND list)
 	}
 
 
-	if (fseek(f, dosHdr.e_lfanew + sizeof(IMAGE_NT_HEADERS), SEEK_SET))
+	if (fread(&FileHeader, sizeof(IMAGE_FILE_HEADER), 1, f) < 1)
 	{
 		/* No PE header */
+		status = ST_NOT_IMAGE_ERROR;
+		goto cleanup2;
+	}
+
+	DWORD Magic = 0;
+	if (fread(&Magic, 2, 1, f) < 1)
+	{
+		/* No PE header */
+		status = ST_NOT_IMAGE_ERROR;
+		goto cleanup2;
+	}
+
+	if (fseek(f, dosHdr.e_lfanew + 4 + sizeof(IMAGE_FILE_HEADER), SEEK_SET))
+	{
+		/* No PE header */
+		status = ST_NOT_IMAGE_ERROR;
+		goto cleanup2;
+	}
+
+	if (Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+	{
+		IMAGE_OPTIONAL_HEADER32 *OptionalHeader32 = malloc(sizeof(IMAGE_OPTIONAL_HEADER32));
+		if (!OptionalHeader32)
+		{
+			status = ST_MEMORY_ERROR;
+			goto cleanup2;
+		}
+
+		OptionalHeader = OptionalHeader32;
+
+		if (fread(OptionalHeader, sizeof(IMAGE_OPTIONAL_HEADER32), 1, f) < 1)
+		{
+			/* No PE header */
+			status = ST_NOT_IMAGE_ERROR;
+			goto cleanup3;
+		}
+
+
+		if (fseek(f, dosHdr.e_lfanew + sizeof(IMAGE_NT_HEADERS32), SEEK_SET))
+		{
+			/* No PE header */
+			status = ST_PARSE_ERROR;
+			goto cleanup3;
+		}
+
+	}
+	else if (Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+	{
+		IMAGE_OPTIONAL_HEADER64 *OptionalHeader64 = malloc(sizeof(IMAGE_OPTIONAL_HEADER64));
+		if (!OptionalHeader64)
+		{
+			status = ST_MEMORY_ERROR;
+			goto cleanup2;
+		}
+
+		OptionalHeader = OptionalHeader64;
+
+		if (fread(OptionalHeader, sizeof(IMAGE_OPTIONAL_HEADER64), 1, f) < 1)
+		{
+			/* No PE header */
+			status = ST_NOT_IMAGE_ERROR;
+			goto cleanup3;
+		}
+
+		if (fseek(f, dosHdr.e_lfanew + sizeof(IMAGE_NT_HEADERS64), SEEK_SET))
+		{
+			/* No PE header */
+			status = ST_PARSE_ERROR;
+			goto cleanup3;
+		}
+	}
+	else
+	{
+		/* IMAGE_ROM_OPTIONAL_HDR_MAGIC */
+
 		status = ST_PARSE_ERROR;
 		goto cleanup2;
 	}
 
-	size_t sectionTableSize = ntHdr.FileHeader.NumberOfSections * sizeof(IMAGE_SECTION_HEADER);
+	// ****
+
+	size_t sectionTableSize = FileHeader.NumberOfSections * sizeof(IMAGE_SECTION_HEADER);
 
 	sections = malloc(sectionTableSize);
 	if (!sections)
 	{
 		status = ST_MEMORY_ERROR;
-		goto cleanup2;
-	}
-
-	if (fread(sections, 1, sectionTableSize, f) < sectionTableSize)
-	{
-		/* Could not read sections */
-		status = ST_PARSE_ERROR;
 		goto cleanup3;
 	}
 
-	DWORD importVa = ntHdr.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
-	DWORD importSize = ntHdr.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size;
+	DWORD importVa = 0;
+	DWORD importSize = 0;
 	DWORD importFileOff = 0;
 
-	/* Find import table */
-	for (int i = 0; i < ntHdr.FileHeader.NumberOfSections; i++)
+	if (fread(sections, sectionTableSize, 1, f) < 1)
 	{
-		if (sections[i].VirtualAddress <= importVa && importVa < sections[i].VirtualAddress + sections[i].Misc.VirtualSize)
-		{
-			DWORD sectionRelAddress = importVa - sections[i].VirtualAddress;
-			importFileOff = sectionRelAddress + sections[i].PointerToRawData;
-			break;
-		}
+		/* Could not read sections */
+		status = ST_PARSE_ERROR;
+		goto cleanup4;
 	}
+
+	if (Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+	{
+		IMAGE_OPTIONAL_HEADER32* OptionalHeader32 = (IMAGE_OPTIONAL_HEADER32*)OptionalHeader;
+		importVa = OptionalHeader32->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+		importSize = OptionalHeader32->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size;
+	}
+	else if (Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+	{
+		IMAGE_OPTIONAL_HEADER64* OptionalHeader64 = (IMAGE_OPTIONAL_HEADER64*)OptionalHeader;
+		importVa = OptionalHeader64->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+		importSize = OptionalHeader64->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size;
+	}
+	else
+	{
+		status = ST_PARSE_ERROR;
+		goto cleanup4;
+	}
+
+	/* Find import table */
+	importFileOff = RvaToFileOffset(sections, FileHeader.NumberOfSections, importVa);
 
 	if (fseek(f, importFileOff, SEEK_SET))
 	{
 		/* No import table */
 		status = ST_PARSE_ERROR;
-		goto cleanup3;
+		goto cleanup4;
 	}
 
 	IMAGE_IMPORT_DESCRIPTOR *descriptors = malloc(importSize);
 	if (!descriptors)
 	{
 		status = ST_MEMORY_ERROR;
-		goto cleanup3;
-	}
-
-	if (fread(descriptors, 1, importSize, f) < importSize)
-	{
-		/* Could not read import descriptors */
-		status = ST_PARSE_ERROR;
 		goto cleanup4;
 	}
 
-	for (int i = 0; i < (importSize / 0x14); i++)
+	if (fread(descriptors, importSize, 1, f) < 1)
+	{
+		/* Could not read import descriptors */
+		status = ST_PARSE_ERROR;
+		goto cleanup5;
+	}
+
+	for (int i = 0; i < (importSize / sizeof(IMAGE_IMPORT_DESCRIPTOR)); i++)
 	{
 		if (descriptors[i].Characteristics == 0)
 		{
 			break;
 		}
 
-		DWORD offset = RvaToFileOffset(sections, ntHdr.FileHeader.NumberOfSections, descriptors[i].Name);
+		DWORD offset = RvaToFileOffset(sections, FileHeader.NumberOfSections, descriptors[i].Name);
 
 		char name[256] = { 0 };
 		wchar_t namew[256] = { 0 };
@@ -448,7 +553,7 @@ int ReadImports(char* filename, HWND list)
 		if (fseek(f, offset, SEEK_SET))
 		{
 			status = ST_PARSE_ERROR;
-			goto cleanup4;
+			goto cleanup5;
 		}
 
 		while (ii < 256 && fread(&name[ii], 1, 1, f) == 1 && name[ii] != 0)
@@ -465,99 +570,361 @@ int ReadImports(char* filename, HWND list)
 			256                
 		);
 
-		SendMessage(list, LB_ADDSTRING, 0, (LPARAM)namew);
+		IMAGE_IMPORT_DESCRIPTOR* copy = malloc(sizeof(IMAGE_IMPORT_DESCRIPTOR));
+		if (!copy)
+		{
+			status = ST_MEMORY_ERROR;
+			goto cleanup5;
+		}
+		memcpy(copy, &descriptors[i], sizeof(IMAGE_IMPORT_DESCRIPTOR));
+
+		TREE_ITEM* tItem = malloc(sizeof(TREE_ITEM));
+		if (!tItem)
+		{
+			status = ST_MEMORY_ERROR;
+			free(copy);
+			goto cleanup5;
+		}
+
+		tItem->Type = Import;
+		tItem->Data = copy;
+
+		TVINSERTSTRUCT imp = {0};
+		imp.hParent = root;
+		imp.hInsertAfter = TVI_FIRST;
+		imp.item.mask = TVIF_TEXT | TVIF_STATE | TVIF_PARAM;
+		imp.item.pszText = namew;
+		imp.item.cchTextMax = lstrlenW(namew);
+		imp.item.state = TVIS_EXPANDED;
+		imp.item.stateMask = TVIS_EXPANDED;
+		imp.item.lParam = tItem;
+
+		HTREEITEM himp = SendMessage(tree, TVM_INSERTITEM, 0, &imp);
+
+		//SendMessage(list, LB_ADDSTRING, 0, (LPARAM)namew);
 
 
-		DWORD iatOffset = RvaToFileOffset(sections, ntHdr.FileHeader.NumberOfSections, descriptors[i].OriginalFirstThunk);
-		IMAGE_THUNK_DATA thunks[256] = { 0 };
-		int thunkIndex = 0;
-
+		DWORD iatOffset = RvaToFileOffset(sections, FileHeader.NumberOfSections, descriptors[i].OriginalFirstThunk);
 		if (fseek(f, iatOffset, SEEK_SET))
 		{
 			status = ST_PARSE_ERROR;
-			goto cleanup4;
+			free(copy);
+			free(tItem);
+			goto cleanup5;
 		}
 
-		while (thunkIndex < 256 &&  fread(&thunks[thunkIndex], sizeof(IMAGE_THUNK_DATA), 1, f) == 1 && thunks[thunkIndex].u1.AddressOfData != 0)
+
+		void *thunks = NULL;
+		int thunkIndex = 0;
+		if (Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
 		{
-#if defined(_M_AMD64) || defined(_M_ARM64)
-			if( (thunks[thunkIndex].u1.Ordinal >> 63) == 1)
-#elif defined(_M_IX86) || defined(_M_ARM)
-			if ((thunks[thunkIndex].u1.Ordinal >> 31) == 1)
-#endif
+			thunks = malloc(sizeof(IMAGE_THUNK_DATA32) * 256);
+			if (!thunks)
 			{
-				/* Imported by ordinal */
-				int ordinal = thunks[thunkIndex].u1.AddressOfData & 0xFFFF;
-				wchar_t importNameW[256] = { 0 };
-
-				swprintf(importNameW, 256, L"- @%u", ordinal);
-
-				SendMessage(list, LB_ADDSTRING, 0, (LPARAM)importNameW);
-			}
-			else {
-				/* Imported by name */
-				int nameRva = thunks[thunkIndex].u1.AddressOfData & 0x3FFFFFFF;
-				DWORD importNameOffset = RvaToFileOffset(sections, ntHdr.FileHeader.NumberOfSections, nameRva) + 2; // + 2 Hint
-
-				char importName[256] = { 0 };
-				wchar_t importNameW[256] = { 0 };
-				int importNameIndex = 0;
-
-				if (fseek(f, importNameOffset, SEEK_SET))
-				{
-					status = ST_PARSE_ERROR;
-					goto cleanup4;
-				}
-
-				while (importNameIndex < 256 && fread(&importName[importNameIndex], 1, 1, f) == 1 && importName[importNameIndex] != 0)
-				{
-					importNameIndex++;
-				}
-
-				/* Reset file pointer for next thunk */
-				if (fseek(f, iatOffset + thunkIndex * sizeof(IMAGE_THUNK_DATA), SEEK_SET))
-				{
-					status = ST_PARSE_ERROR;
-					goto cleanup4;
-				}
-
-
-				MultiByteToWideChar(
-					CP_ACP,
-					0,
-					importName,
-					strlen(importName),
-					importNameW,
-					256
-				);
-
-				wchar_t res[256] = { 0 };
-				swprintf(res, 256, L"- %s", importNameW);
-
-				SendMessage(list, LB_ADDSTRING, 0, (LPARAM)res);
-
+				status = ST_MEMORY_ERROR;
+				goto cleanup5;
 			}
 
-			
+			while (
+				thunkIndex < 256 &&
+				fread(&((IMAGE_THUNK_DATA32*)thunks)[thunkIndex], sizeof(IMAGE_THUNK_DATA32), 1, f) == 1 &&
+				((IMAGE_THUNK_DATA32*)thunks)[thunkIndex].u1.AddressOfData != 0
+				)
+			{
+				IMAGE_THUNK_DATA32* copy = malloc(sizeof(IMAGE_THUNK_DATA32));
+				if (!copy)
+				{
+					status = ST_MEMORY_ERROR;
+					free(thunks);
+					goto cleanup5;
+				}
+				memcpy(copy, &((IMAGE_THUNK_DATA32*)thunks)[thunkIndex], sizeof(IMAGE_THUNK_DATA32));
+
+				TREE_ITEM* tItem = malloc(sizeof(TREE_ITEM));
+				if (!tItem)
+				{
+					free(copy);
+					free(thunks);
+					status = ST_MEMORY_ERROR;
+					goto cleanup5;
+				}
+
+				tItem->Type = Thunk32;
+				tItem->Data = copy;
+
+				if ((((IMAGE_THUNK_DATA32*)thunks)[thunkIndex].u1.Ordinal >> 31) == 1)
+				{
+					/* Imported by ordinal */
+					int ordinal = ((IMAGE_THUNK_DATA32*)thunks)[thunkIndex].u1.AddressOfData & 0xFFFF;
+					wchar_t importNameW[256] = { 0 };
+
+					swprintf(importNameW, 256, L"- #%u", ordinal);
+
+					TVINSERTSTRUCT name = { 0 };
+					name.hParent = himp;
+					name.hInsertAfter = TVI_FIRST;
+					name.item.mask = TVIF_TEXT | TVIF_STATE | TVIF_PARAM;
+					name.item.pszText = importNameW;
+					name.item.cchTextMax = lstrlenW(importNameW);
+					name.item.state = TVIS_EXPANDED;
+					name.item.stateMask = TVIS_EXPANDED;
+					name.item.lParam = tItem;
+
+					SendMessage(tree, TVM_INSERTITEM, 0, &name);
+
+				}
+				else
+				{
+					/* Imported by name */
+					int nameRva = ((IMAGE_THUNK_DATA32*)thunks)[thunkIndex].u1.AddressOfData & 0x3FFFFFFF;
+					DWORD importNameOffset = RvaToFileOffset(sections, FileHeader.NumberOfSections, nameRva) + 2; // + 2 Hint
+
+					char importName[256] = { 0 };
+					wchar_t importNameW[256] = { 0 };
+					int importNameIndex = 0;
+
+					if (fseek(f, importNameOffset, SEEK_SET))
+					{
+						status = ST_PARSE_ERROR;
+						free(copy);
+						free(thunks);
+						free(tItem);
+						goto cleanup5;
+					}
+
+					while (importNameIndex < 256 && fread(&importName[importNameIndex], 1, 1, f) == 1 && importName[importNameIndex] != 0)
+					{
+						importNameIndex++;
+					}
+
+					/* Reset file pointer for next thunk */
+					if (fseek(f, iatOffset + thunkIndex * sizeof(IMAGE_THUNK_DATA32), SEEK_SET))
+					{
+						status = ST_PARSE_ERROR;
+						free(copy);
+						free(thunks);
+						free(tItem);
+						goto cleanup5;
+					}
 
 
-			thunkIndex++;
+					MultiByteToWideChar(
+						CP_ACP,
+						0,
+						importName,
+						strlen(importName),
+						importNameW,
+						256
+					);
+
+					wchar_t res[256] = { 0 };
+					swprintf(res, 256, L"- %s", importNameW);
+
+					TVINSERTSTRUCT name = { 0 };
+					name.hParent = himp;
+					name.hInsertAfter = TVI_FIRST;
+					name.item.mask = TVIF_TEXT | TVIF_STATE | TVIF_PARAM;
+					name.item.pszText = importNameW;
+					name.item.cchTextMax = lstrlenW(importNameW);
+					name.item.state = TVIS_EXPANDED;
+					name.item.stateMask = TVIS_EXPANDED;
+					name.item.lParam = tItem;
+
+					SendMessage(tree, TVM_INSERTITEM, 0, &name);
+
+				}
+
+				thunkIndex++;
+			}
+
+
+
+
+
+		}
+		else if (Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+		{
+			thunks = malloc(sizeof(IMAGE_THUNK_DATA64) * 256);
+			if (!thunks)
+			{
+				status = ST_MEMORY_ERROR;
+				goto cleanup5;
+			}
+
+			while (
+				thunkIndex < 256 &&
+				fread(&((IMAGE_THUNK_DATA64*)thunks)[thunkIndex], sizeof(IMAGE_THUNK_DATA64), 1, f) == 1 &&
+				((IMAGE_THUNK_DATA64*)thunks)[thunkIndex].u1.AddressOfData != 0
+				)
+			{
+				IMAGE_THUNK_DATA64* copy = malloc(sizeof(IMAGE_THUNK_DATA64));
+				if (!copy)
+				{
+					status = ST_MEMORY_ERROR;
+					free(thunks);
+					goto cleanup5;
+				}
+				memcpy(copy, &((IMAGE_THUNK_DATA64*)thunks)[thunkIndex], sizeof(IMAGE_THUNK_DATA64));
+
+				TREE_ITEM* tItem = malloc(sizeof(TREE_ITEM));
+				if (!tItem)
+				{
+					free(copy);
+					free(thunks);
+					status = ST_MEMORY_ERROR;
+					goto cleanup5;
+				}
+
+				tItem->Type = Thunk64;
+				tItem->Data = copy;
+
+				if ((((IMAGE_THUNK_DATA64*)thunks)[thunkIndex].u1.Ordinal >> 63) == 1)
+				{
+					/* Imported by ordinal */
+					int ordinal = ((IMAGE_THUNK_DATA64*)thunks)[thunkIndex].u1.AddressOfData & 0xFFFF;
+					wchar_t importNameW[256] = { 0 };
+
+					swprintf(importNameW, 256, L"- #%u", ordinal);
+
+					TVINSERTSTRUCT name = { 0 };
+					name.hParent = himp;
+					name.hInsertAfter = TVI_FIRST;
+					name.item.mask = TVIF_TEXT | TVIF_STATE | TVIF_PARAM;
+					name.item.pszText = importNameW;
+					name.item.cchTextMax = lstrlenW(importNameW);
+					name.item.state = TVIS_EXPANDED;
+					name.item.stateMask = TVIS_EXPANDED;
+					name.item.lParam = tItem;
+
+					SendMessage(tree, TVM_INSERTITEM, 0, &name);
+
+				}
+				else
+				{
+					/* Imported by name */
+					int nameRva = ((IMAGE_THUNK_DATA64*)thunks)[thunkIndex].u1.AddressOfData & 0x3FFFFFFF;
+					DWORD importNameOffset = RvaToFileOffset(sections, FileHeader.NumberOfSections, nameRva) + 2; // + 2 Hint
+
+					char importName[256] = { 0 };
+					wchar_t importNameW[256] = { 0 };
+					int importNameIndex = 0;
+
+					if (fseek(f, importNameOffset, SEEK_SET))
+					{
+						status = ST_PARSE_ERROR;
+						free(copy);
+						free(thunks);
+						free(tItem);
+						goto cleanup5;
+					}
+
+					while (importNameIndex < 256 && fread(&importName[importNameIndex], 1, 1, f) == 1 && importName[importNameIndex] != 0)
+					{
+						importNameIndex++;
+					}
+
+					/* Reset file pointer for next thunk */
+					if (fseek(f, iatOffset + thunkIndex * sizeof(IMAGE_THUNK_DATA64), SEEK_SET))
+					{
+						status = ST_PARSE_ERROR;
+						free(copy);
+						free(thunks);
+						free(tItem);
+						goto cleanup5;
+					}
+
+
+					MultiByteToWideChar(
+						CP_ACP,
+						0,
+						importName,
+						strlen(importName),
+						importNameW,
+						256
+					);
+
+					wchar_t res[256] = { 0 };
+					swprintf(res, 256, L"- %s", importNameW);
+
+					TVINSERTSTRUCT name = { 0 };
+					name.hParent = himp;
+					name.hInsertAfter = TVI_FIRST;
+					name.item.mask = TVIF_TEXT | TVIF_STATE | TVIF_PARAM;
+					name.item.pszText = importNameW;
+					name.item.cchTextMax = lstrlenW(importNameW);
+					name.item.state = TVIS_EXPANDED;
+					name.item.stateMask = TVIS_EXPANDED;
+					name.item.lParam = tItem;
+
+					SendMessage(tree, TVM_INSERTITEM, 0, &name);
+
+				}
+
+				thunkIndex++;
+			}
+		}
+		else
+		{
+			free(copy);
+			free(tItem);
+			goto cleanup5;
 		}
 
-
+		free(thunks);
 	}
 
-cleanup4:
+cleanup5:
 	free(descriptors);
-cleanup3:
+
+cleanup4:
 	free(sections);
 
+cleanup3:
+	free(OptionalHeader);
 cleanup2:
+
 	fclose(f);
 
 cleanup1:
 	return status;
 
+}
+
+void FreeTreeViewUserData(HWND tree, HTREEITEM root)
+{
+	if (!root)
+	{
+		return;
+	}
+
+	TVITEM tvi = { 0 };
+	tvi.hItem = root;
+	tvi.mask = TVIF_PARAM;
+
+	SendMessage(tree, TVM_GETITEM, 0, &tvi);
+
+	TREE_ITEM* ti = (TREE_ITEM *)tvi.lParam;
+	if (ti && ti->Data)
+	{
+		free(ti->Data);
+	}
+
+	if (ti)
+	{
+		free(ti);
+	}
+
+	while (root)
+	{
+		HTREEITEM child = SendMessage(tree, TVM_GETNEXTITEM, TVGN_CHILD, root);
+		if (child)
+		{
+			FreeTreeViewUserData(tree, child);
+		}
+
+		root = SendMessage(tree, TVM_GETNEXTITEM, TVGN_NEXT, root);
+
+	}
 }
 
 int ApplyWindowStyle(WINDOW_DATA *data)
@@ -574,7 +941,7 @@ int ApplyWindowStyle(WINDOW_DATA *data)
 			RGB(255, 0, 0),
 			RGB(135, 0, 0),
 			RGB(0, 255, 0),
-			RGB(0,0,0)
+			RGB(255,255,255)
 	};
 
 	if (!data->hasBackup)
@@ -588,7 +955,7 @@ int ApplyWindowStyle(WINDOW_DATA *data)
 
 
 	int elements[4] = { COLOR_ACTIVECAPTION, COLOR_GRADIENTACTIVECAPTION, COLOR_CAPTIONTEXT, COLOR_WINDOW };
-	if (!SetSysColors(3, elements, colors))
+	if (!SetSysColors(4, elements, colors))
 	{
 		return 1;
 	}
@@ -618,6 +985,30 @@ int ApplyWindowStyle(WINDOW_DATA *data)
 	SetThemeAppProperties(0);
 
 	return 0;
+}
+
+int ShowContextMenu(HWND hwnd, POINT p)
+{
+	HMENU menu = CreatePopupMenu();
+	int option = 0;
+
+	if (menu)
+	{
+		AppendMenu(menu, MF_STRING, 50, L"Properties");
+
+		option = TrackPopupMenu(
+			menu, 
+			TPM_LEFTBUTTON | TPM_TOPALIGN | TPM_LEFTALIGN | TPM_RETURNCMD,
+			p.x,
+			p.y,
+			0, 
+			hwnd,
+			NULL);
+
+		DestroyMenu(menu);
+	}
+
+	return option;
 }
 
 LRESULT Wndproc(
@@ -673,7 +1064,7 @@ LRESULT Wndproc(
 		);
 
 		INITCOMMONCONTROLSEX comctl;
-		comctl.dwICC = ICC_TAB_CLASSES;
+		comctl.dwICC = ICC_TAB_CLASSES | ICC_TREEVIEW_CLASSES;
 		comctl.dwSize = sizeof(INITCOMMONCONTROLSEX);
 		if (!InitCommonControlsEx(&comctl))
 		{
@@ -709,6 +1100,23 @@ LRESULT Wndproc(
 			GetWindowLongPtr(unnamedParam1, GWLP_HINSTANCE),
 			NULL);
 
+		data->tree = CreateWindow(
+			WC_TREEVIEW,
+			NULL,
+			WS_CHILD | WS_BORDER | TVS_HASLINES | TVS_LINESATROOT | TVS_HASBUTTONS,
+			0,
+			0,
+			clientRect.right,
+			clientRect.bottom,
+			unnamedParam1,
+			(HMENU)103,
+			GetWindowLongPtr(unnamedParam1, GWLP_HINSTANCE),
+			NULL);
+
+		SetWindowTheme(data->tree, L"", L"");
+
+
+
 		SetWindowLongPtr(unnamedParam1, GWLP_USERDATA, data);
 
 
@@ -732,6 +1140,108 @@ LRESULT Wndproc(
 
 		PostQuitMessage(0);
 		return 0;
+		break;
+	}
+
+	case WM_NOTIFY:
+	{
+		if (((LPNMHDR)unnamedParam4)->idFrom == 103 && ((LPNMHDR)unnamedParam4)->code == NM_RCLICK)
+		{
+
+			POINT p;
+			GetCursorPos(&p);
+
+			POINT pClient = p;
+			ScreenToClient(((LPNMHDR)unnamedParam4)->hwndFrom, &pClient);
+
+
+			TVHITTESTINFO hit = { 0 };
+			hit.pt = pClient;
+			
+			HTREEITEM item = SendMessage(((LPNMHDR)unnamedParam4)->hwndFrom, TVM_HITTEST, 0, &hit);
+			if (item)
+			{
+				SendMessage(((LPNMHDR)unnamedParam4)->hwndFrom, TVM_SELECTITEM, TVGN_CARET, item);
+				int option = ShowContextMenu(unnamedParam1, p);
+
+				if (option == 50)
+				{
+					/* Properties */
+
+					wchar_t propertyName[256] = { 0 };
+					TVITEM tvi = { 0 };
+					tvi.mask = TVIF_PARAM | TVIF_TEXT;
+					tvi.hItem = item;
+					tvi.pszText = propertyName;
+					tvi.cchTextMax = 256;
+
+					if (SendMessage(((LPNMHDR)unnamedParam4)->hwndFrom, TVM_GETITEM, 0, &tvi))
+					{
+						TREE_ITEM* it = (TREE_ITEM*)tvi.lParam;
+						if (it && it->Type == Import)
+						{
+							IMAGE_IMPORT_DESCRIPTOR* data = (IMAGE_IMPORT_DESCRIPTOR*)it->Data;
+
+							wchar_t msg[1024] = { 0 };
+							swprintf(msg, 1024, 
+								L"Name: %x\n"
+								L"Characteristics\\OriginalFirstThunk: % x\n"
+								L"ForwarderChain: % x\n"
+								L"FirstThunk: %x\n"
+								L"TimeDateStamp: %x\n",
+								data->Name, 
+								data->Characteristics, 
+								data->ForwarderChain, 
+								data->FirstThunk,
+								data->TimeDateStamp);
+
+							wchar_t msg1[256] = { 0 };
+							swprintf(msg1, 256, L"Properties for %s", propertyName);
+
+
+							MessageBox(unnamedParam1, msg, msg1, MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+						}
+						else if (it && it->Type == Thunk32)
+						{
+							IMAGE_THUNK_DATA32* data = (IMAGE_THUNK_DATA32*)it->Data;
+
+							wchar_t msg[1024] = { 0 };
+							swprintf(msg, 1024,
+								L"IMAGE_THUNK_DATA32: %x\n",
+								data->u1.AddressOfData);
+
+							wchar_t msg1[256] = { 0 };
+							swprintf(msg1, 256, L"Properties for %s", propertyName);
+
+							MessageBox(unnamedParam1, msg, msg1, MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+
+						}
+						else if (it && it->Type == Thunk64)
+						{
+							IMAGE_THUNK_DATA64* data = (IMAGE_THUNK_DATA64*)it->Data;
+
+							wchar_t msg[1024] = { 0 };
+							swprintf(msg, 1024,
+								L"IMAGE_THUNK_DATA64: %llx\n",
+								data->u1.AddressOfData);
+
+							wchar_t msg1[256] = { 0 };
+							swprintf(msg1, 256, L"Properties for %s", propertyName);
+
+							MessageBox(unnamedParam1, msg, msg1, MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+						}
+					}
+
+
+				}
+
+			}
+
+
+
+		}
+
+
 		break;
 	}
 
@@ -780,7 +1290,25 @@ LRESULT Wndproc(
 		DragFinish((HDROP)unnamedParam3);
 
 
-		int status = ReadImports(file, data->listBox);
+
+		if (data->treeRoot)
+		{
+			FreeTreeViewUserData(data->tree, data->treeRoot);
+			SendMessage(data->tree, TVM_DELETEITEM, 0, data->treeRoot);
+		}
+
+		TVINSERTSTRUCT root = { 0 };
+		root.hParent = TVI_ROOT;
+		root.hInsertAfter = TVI_FIRST;
+		root.item.mask = TVIF_TEXT | TVIF_STATE;
+		root.item.pszText = L".idata";
+		root.item.cchTextMax = lstrlenW(L".idata");
+		root.item.state = TVIS_EXPANDED;
+		root.item.stateMask = TVIS_EXPANDED;
+
+		data->treeRoot = SendMessage(data->tree, TVM_INSERTITEM, 0, &root);
+
+		int status = ReadImports(file, data->listBox, data->tree, data->treeRoot);
 
 		/*
 		#define ST_SUCCESS 0
@@ -793,7 +1321,9 @@ LRESULT Wndproc(
 
 		if (status)
 		{
-			SendMessage(data->listBox, LB_RESETCONTENT, 0, 0);
+			FreeTreeViewUserData(data->tree, data->treeRoot);
+			SendMessage(data->tree, TVM_DELETEITEM, 0, data->treeRoot);
+			//SendMessage(data->listBox, LB_RESETCONTENT, 0, 0);
 
 			switch (status)
 			{
@@ -829,8 +1359,9 @@ LRESULT Wndproc(
 		else
 		{
 			ShowWindow(GetDlgItem(unnamedParam1, 102), SW_HIDE);
-			ShowWindow(GetDlgItem(unnamedParam1, 101), SW_SHOW);
-			ShowWindow(GetDlgItem(unnamedParam1, 100), SW_SHOW);
+			//ShowWindow(GetDlgItem(unnamedParam1, 101), SW_SHOW);
+			ShowWindow(GetDlgItem(unnamedParam1, 103), SW_SHOW);
+			//ShowWindow(GetDlgItem(unnamedParam1, 100), SW_SHOW);
 		}
 
 
