@@ -1,0 +1,14 @@
+#ifndef _CONTROLS_H
+#define _CONTROLS_H
+
+#define ID_BASE 1000
+
+
+#define IDC_MAIN				(HMENU)(ID_BASE)
+#define IDC_MAIN_LABEL			(HMENU)(ID_BASE + 1)
+#define IDC_MAIN_TABS			(HMENU)(ID_BASE + 2)
+#define IDC_HEADER_LISTVIEW		(HMENU)(ID_BASE + 3)
+#define IDC_IMPORT_TREEVIEW		(HMENU)(ID_BASE + 4)
+
+
+#endif

@@ -8,13 +8,15 @@
 
 #include <stdio.h>
 
+#include "controls.h"
+
 typedef struct _WINDOW_DATA
 {
 	HWND main;
+
+	HWND headerListView;
 	HWND dropNotice;
-	HWND listBox;
 	HWND tabs;
-	HWND loadButton;
 	HWND tree;
 	HTREEITEM treeRoot;
 
@@ -34,283 +36,6 @@ typedef struct _TREE_ITEM
 	void* Data;
 } TREE_ITEM;
 
-#define SHARED_COUNT 112
-wchar_t* shared_names[] =
-{
-	L"TickCountLowDeprecated",
-	L"TickCountMultiplier",
-	L"InterruptTime",
-	L"SystemTime",
-	L"TimeZoneBias",
-	L"ImageNumberLow",
-	L"ImageNumberHigh",
-	L"NtSystemRoot",
-	L"MaxStackTraceDepth",
-	L"CryptoExponent",
-	L"TimeZoneId",
-	L"LargePageMinimum",
-	L"AitSamplingValue",
-	L"AppCompatFlag",
-	L"RNGSeedVersion",
-	L"GlobalValidationRunlevel",
-	L"TimeZoneBiasStamp",
-	L"NtBuildNumber",
-	L"NtProductType",
-	L"ProductTypeIsValid",
-	L"NativeProcessorArchitecture",
-	L"NtMajorVersion",
-	L"NtMinorVersion",
-	L"ProcessorFeatures[PF_FLOATING_POINT_PRECISION_ERRATA]",
-	L"ProcessorFeatures[PF_FLOATING_POINT_EMULATED]",
-	L"ProcessorFeatures[PF_COMPARE_EXCHANGE_DOUBLE]",
-	L"ProcessorFeatures[PF_MMX_INSTRUCTIONS_AVAILABLE]",
-	L"ProcessorFeatures[PF_PPC_MOVEMEM_64BIT_OK]",
-	L"ProcessorFeatures[PF_ALPHA_BYTE_INSTRUCTIONS]",
-	L"ProcessorFeatures[PF_XMMI_INSTRUCTIONS_AVAILABLE]",
-	L"ProcessorFeatures[PF_3DNOW_INSTRUCTIONS_AVAILABLE]",
-	L"ProcessorFeatures[PF_RDTSC_INSTRUCTION_AVAILABLE]",
-	L"ProcessorFeatures[PF_PAE_ENABLED]",
-	L"ProcessorFeatures[PF_XMMI64_INSTRUCTIONS_AVAILABLE]",
-	L"ProcessorFeatures[PF_SSE_DAZ_MODE_AVAILABLE]",
-	L"ProcessorFeatures[PF_NX_ENABLED]",
-	L"ProcessorFeatures[PF_SSE3_INSTRUCTIONS_AVAILABLE]",
-	L"ProcessorFeatures[PF_COMPARE_EXCHANGE128]",
-	L"ProcessorFeatures[PF_COMPARE64_EXCHANGE128]",
-	L"ProcessorFeatures[PF_CHANNELS_ENABLED]",
-	L"ProcessorFeatures[PF_XSAVE_ENABLED]",
-	L"ProcessorFeatures[PF_ARM_VFP_32_REGISTERS_AVAILABLE]",
-	L"ProcessorFeatures[PF_ARM_NEON_INSTRUCTIONS_AVAILABLE]",
-	L"ProcessorFeatures[PF_SECOND_LEVEL_ADDRESS_TRANSLATION]",
-	L"ProcessorFeatures[PF_VIRT_FIRMWARE_ENABLED]",
-	L"ProcessorFeatures[PF_RDWRFSGSBASE_AVAILABLE]",
-	L"ProcessorFeatures[PF_FASTFAIL_AVAILABLE]",
-	L"ProcessorFeatures[PF_ARM_DIVIDE_INSTRUCTION_AVAILABLE]",
-	L"ProcessorFeatures[PF_ARM_64BIT_LOADSTORE_ATOMIC]",
-	L"ProcessorFeatures[PF_ARM_EXTERNAL_CACHE_AVAILABLE]",
-	L"ProcessorFeatures[PF_ARM_FMAC_INSTRUCTIONS_AVAILABLE]",
-	L"ProcessorFeatures[PF_RDRAND_INSTRUCTION_AVAILABLE]",
-	L"ProcessorFeatures[PF_ARM_V8_INSTRUCTIONS_AVAILABLE]",
-	L"ProcessorFeatures[PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE]",
-	L"ProcessorFeatures[PF_ARM_V8_CRC32_INSTRUCTIONS_AVAILABLE]",
-	L"ProcessorFeatures[PF_RDTSCP_INSTRUCTION_AVAILABLE]",
-	L"MaximumUserModeAddressDeprecated",
-	L"SystemRangeStartDeprecated",
-	L"TimeSlip",
-	L"AlternativeArchitecture",
-	L"BootId",
-
-	L"SystemExpirationDate",
-	L"SuiteMask",
-	L"KdDebuggerEnabled",
-	L"MitigationPolicies",
-	L"CyclesPerYield",
-	L"ActiveConsoleId",
-	L"DismountCount",
-	L"ComPlusPackage",
-	L"LastSystemRITEventTickCount",
-	L"NumberOfPhysicalPages",
-	L"SafeBootMode",
-	L"VirtualizationFlags",
-	L"SharedDataFlags",
-	L"TestRetInstruction",
-	L"QpcFrequency",
-	L"SystemCall",
-	L"FullNumberOfPhysicalPages",
-	L"TickCountQuad",
-	L"Cookie",
-	L"ConsoleSessionForegroundProcessId",
-	L"TimeUpdateLock",
-	L"BaselineSystemTimeQpc",
-	L"BaselineInterruptTimeQpc",
-	L"QpcSystemTimeIncrement",
-	L"QpcInterruptTimeIncrement",
-	L"QpcSystemTimeIncrementShift",
-	L"QpcInterruptTimeIncrementShift",
-	L"UnparkedProcessorCount",
-	L"EnclaveFeatureMask[0]",
-	L"EnclaveFeatureMask[1]",
-	L"EnclaveFeatureMask[2]",
-	L"EnclaveFeatureMask[3]",
-	L"TelemetryCoverageRound",
-	L"UserModeGlobalLogger[ETW_UMGL_INDEX_HEAP]",
-	L"UserModeGlobalLogger[ETW_UMGL_INDEX_CRITSEC]",
-	L"UserModeGlobalLogger[ETW_UMGL_INDEX_LDR]",
-	L"UserModeGlobalLogger[ETW_UMGL_INDEX_THREAD_POOL]",
-	L"UserModeGlobalLogger[ETW_UMGL_INDEX_HEAPRANGE]",
-	L"UserModeGlobalLogger[ETW_UMGL_INDEX_HEAPSUMMARY]",
-	L"UserModeGlobalLogger[ETW_UMGL_INDEX_UMS]",
-	L"UserModeGlobalLogger[ETW_UMGL_INDEX_WNF]",
-	L"ImageFileExecutionOptions",
-	L"LangGenerationCount",
-	L"InterruptTimeBias",
-	L"QpcBias",
-	L"ActiveProcessorCount",
-	L"ActiveGroupCount",
-	L"QpcData",
-	L"XState",
-	L"UserPointerAuthMask",
-	L"FeatureConfigurationChangeStamp"
-
-};
-
-int lineCounter = 0;
-wchar_t(* linesGlobal)[256];
-
-inline void Emit32(DWORD val)
-{
-	swprintf_s(linesGlobal[lineCounter], 256, L"%s: %x", shared_names[lineCounter], val);
-	lineCounter++;
-}
-
-inline void Emit64(ULONGLONG val)
-{
-	swprintf_s(linesGlobal[lineCounter], 256, L"%s: %llx", shared_names[lineCounter], val);
-	lineCounter++;
-}
-
-inline void EmitStr(wchar_t *val)
-{
-	swprintf_s(linesGlobal[lineCounter], 256, L"%s: %s", shared_names[lineCounter], val);
-	lineCounter++;
-}
-
-void ReadSharedData(HWND list)
-{
-	wchar_t lines[SHARED_COUNT][256] = { 0 };
-	linesGlobal = lines;
-
-	lineCounter = 0;
-
-	SendMessage(list, LB_RESETCONTENT, 0, 0);
-
-	Emit32(USER_SHARED_DATA->TickCountLowDeprecated);
-	Emit32(USER_SHARED_DATA->TickCountMultiplier);
-	Emit64((((ULONGLONG)USER_SHARED_DATA->InterruptTime.High1Time) << 32) | USER_SHARED_DATA->InterruptTime.LowPart);
-	Emit64((((ULONGLONG)USER_SHARED_DATA->SystemTime.High1Time) << 32) | USER_SHARED_DATA->SystemTime.LowPart);
-	Emit64((((ULONGLONG)USER_SHARED_DATA->TimeZoneBias.High1Time) << 32) | USER_SHARED_DATA->TimeZoneBias.LowPart);
-
-	Emit32(USER_SHARED_DATA->ImageNumberLow);
-	Emit32(USER_SHARED_DATA->ImageNumberHigh);
-	EmitStr(USER_SHARED_DATA->NtSystemRoot); // str
-	Emit32(USER_SHARED_DATA->MaxStackTraceDepth);
-
-	Emit32(USER_SHARED_DATA->CryptoExponent);
-	Emit32(USER_SHARED_DATA->TimeZoneId);
-	Emit32(USER_SHARED_DATA->LargePageMinimum);
-	Emit32(USER_SHARED_DATA->AitSamplingValue);
-	Emit32(USER_SHARED_DATA->AppCompatFlag);
-	Emit64(USER_SHARED_DATA->RNGSeedVersion);
-	Emit32(USER_SHARED_DATA->GlobalValidationRunlevel);
-	Emit32(USER_SHARED_DATA->TimeZoneBiasStamp);
-	Emit32(USER_SHARED_DATA->NtBuildNumber);
-	EmitStr(USER_SHARED_DATA->NtProductType == 1 ? L"NtProductWinNt" : (USER_SHARED_DATA->NtProductType == 2 ? L"NtProductLanManNT" : L"NtProductServer")); // str
-	Emit32(USER_SHARED_DATA->ProductTypeIsValid);
-	Emit32(USER_SHARED_DATA->NativeProcessorArchitecture);
-	Emit32(USER_SHARED_DATA->NtMajorVersion);
-	Emit32(USER_SHARED_DATA->NtMinorVersion);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[0]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[1]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[2]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[3]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[4]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[5]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[6]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[7]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[8]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[9]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[10]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[11]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[12]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[13]);
-
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[14]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[15]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[16]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[17]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[18]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[19]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[20]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[21]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[22]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[23]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[24]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[25]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[26]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[27]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[28]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[29]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[30]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[31]);
-	Emit32(USER_SHARED_DATA->ProcessorFeatures[32]);
-	Emit32(USER_SHARED_DATA->MaximumUserModeAddressDeprecated);
-	Emit32(USER_SHARED_DATA->SystemRangeStartDeprecated);
-	Emit32(USER_SHARED_DATA->TimeSlip);
-	EmitStr(USER_SHARED_DATA->AlternativeArchitecture == 0 ? L"StandardDesign" : (USER_SHARED_DATA->AlternativeArchitecture == 1 ? L"NEC98x86" : L"EndAlternatives")); // str
-	Emit32(USER_SHARED_DATA->BootId);
-
-	Emit64(USER_SHARED_DATA->SystemExpirationDate.QuadPart);
-	Emit32(USER_SHARED_DATA->SuiteMask);
-	Emit32(USER_SHARED_DATA->KdDebuggerEnabled);
-
-	Emit32(USER_SHARED_DATA->MitigationPolicies);
-	Emit32(USER_SHARED_DATA->CyclesPerYield);
-	Emit32(USER_SHARED_DATA->ActiveConsoleId);
-	Emit32(USER_SHARED_DATA->DismountCount);
-	Emit32(USER_SHARED_DATA->ComPlusPackage);
-	Emit32(USER_SHARED_DATA->LastSystemRITEventTickCount);
-	Emit32(USER_SHARED_DATA->NumberOfPhysicalPages);
-	Emit32(USER_SHARED_DATA->SafeBootMode);
-	Emit32(USER_SHARED_DATA->VirtualizationFlags);
-	Emit32(USER_SHARED_DATA->SharedDataFlags);
-	Emit64(USER_SHARED_DATA->TestRetInstruction);
-	Emit64(USER_SHARED_DATA->QpcFrequency);
-	Emit32(USER_SHARED_DATA->SystemCall);
-	Emit64(USER_SHARED_DATA->FullNumberOfPhysicalPages);
-	Emit64(USER_SHARED_DATA->TickCountQuad);
-	Emit32(USER_SHARED_DATA->Cookie);
-	Emit64(USER_SHARED_DATA->ConsoleSessionForegroundProcessId);
-	Emit64(USER_SHARED_DATA->TimeUpdateLock);
-	Emit64(USER_SHARED_DATA->BaselineSystemTimeQpc);
-	Emit64(USER_SHARED_DATA->BaselineInterruptTimeQpc);
-	Emit64(USER_SHARED_DATA->QpcSystemTimeIncrement);
-	Emit64(USER_SHARED_DATA->QpcInterruptTimeIncrement);
-
-	Emit32(USER_SHARED_DATA->QpcSystemTimeIncrementShift);
-	Emit32(USER_SHARED_DATA->QpcInterruptTimeIncrementShift);
-	Emit32(USER_SHARED_DATA->UnparkedProcessorCount);
-	Emit32(USER_SHARED_DATA->EnclaveFeatureMask[0]);
-	Emit32(USER_SHARED_DATA->EnclaveFeatureMask[1]);
-	Emit32(USER_SHARED_DATA->EnclaveFeatureMask[2]);
-	Emit32(USER_SHARED_DATA->EnclaveFeatureMask[3]);
-	Emit32(USER_SHARED_DATA->TelemetryCoverageRound);
-	Emit32(USER_SHARED_DATA->UserModeGlobalLogger[ETW_UMGL_INDEX_HEAP]);
-	Emit32(USER_SHARED_DATA->UserModeGlobalLogger[ETW_UMGL_INDEX_CRITSEC]);
-	Emit32(USER_SHARED_DATA->UserModeGlobalLogger[ETW_UMGL_INDEX_LDR]);
-	Emit32(USER_SHARED_DATA->UserModeGlobalLogger[ETW_UMGL_INDEX_THREAD_POOL]);
-	Emit32(USER_SHARED_DATA->UserModeGlobalLogger[ETW_UMGL_INDEX_HEAPRANGE]);
-	Emit32(USER_SHARED_DATA->UserModeGlobalLogger[ETW_UMGL_INDEX_HEAPSUMMARY]);
-	Emit32(USER_SHARED_DATA->UserModeGlobalLogger[ETW_UMGL_INDEX_UMS]);
-	Emit32(USER_SHARED_DATA->UserModeGlobalLogger[ETW_UMGL_INDEX_WNF]);
-
-	Emit32(USER_SHARED_DATA->ImageFileExecutionOptions);
-	Emit32(USER_SHARED_DATA->LangGenerationCount);
-	Emit64(USER_SHARED_DATA->InterruptTimeBias);
-	Emit64(USER_SHARED_DATA->QpcBias);
-	Emit32(USER_SHARED_DATA->ActiveProcessorCount);
-	Emit32(USER_SHARED_DATA->ActiveGroupCount);
-	Emit32(USER_SHARED_DATA->QpcData);
-
-	EmitStr(L"-");
-	Emit64(USER_SHARED_DATA->UserPointerAuthMask);
-	Emit64((((ULONGLONG)USER_SHARED_DATA->FeatureConfigurationChangeStamp.High1Time) << 32) | USER_SHARED_DATA->FeatureConfigurationChangeStamp.LowPart);
-
-
-	for (int i = 0; i < SHARED_COUNT; i++)
-	{
-		SendMessage(list, LB_ADDSTRING, 0, (LPARAM)lines[i]);
-	}
-
-}
 
 DWORD RvaToFileOffset(IMAGE_SECTION_HEADER *s, DWORD sectionCount, DWORD rva)
 {
@@ -333,7 +58,75 @@ DWORD RvaToFileOffset(IMAGE_SECTION_HEADER *s, DWORD sectionCount, DWORD rva)
 #define ST_PARSE_ERROR 3
 #define ST_MEMORY_ERROR 4
 
-int ReadImports(char* filename, HWND list, HWND tree, HTREEITEM root)
+void ListViewAddItem(HWND list, int row, int col, wchar_t* text)
+{
+	if (col == 0)
+	{
+		LVITEM lvi = { 0 };
+
+		lvi.mask = LVIF_TEXT;
+		lvi.iItem = row;
+		lvi.iSubItem = 0;
+		lvi.pszText = text;
+
+		ListView_InsertItem(list, &lvi);
+	}
+	else 
+	{
+		ListView_SetItemText(list, row, col, text);
+	}
+}
+
+int FillHeaderListView(HWND l, DWORD signature, IMAGE_FILE_HEADER *file, VOID *optional, DWORD magic)
+{
+	wchar_t str[1024] = { 0 };
+
+	ListViewAddItem(l, 0, 0, L"Signature");
+
+	ListViewAddItem(l, 1, 0, L"Machine");
+	ListViewAddItem(l, 2, 0, L"NumberOfSections");
+	ListViewAddItem(l, 3, 0, L"TimeDateStamp");
+	ListViewAddItem(l, 4, 0, L"PointerToSymbolTable");
+	ListViewAddItem(l, 5, 0, L"NumberOfSymbols");
+	ListViewAddItem(l, 6, 0, L"SizeOfOptionalHeader");
+	ListViewAddItem(l, 7, 0, L"Characteristics");
+
+	int wr = 0;
+	wr = swprintf(str, 1024, L"0x%x", signature);
+	ListViewAddItem(l, 0, 1, str);
+
+	memset(str, 0, wr);
+	wr = swprintf(str, 1024, L"0x%x", file->Machine);
+	ListViewAddItem(l, 1, 1, str);
+
+	memset(str, 0, wr);
+	wr = swprintf(str, 1024, L"%d", file->NumberOfSections);
+	ListViewAddItem(l, 2, 1, str);
+	
+	memset(str, 0, wr);
+	wr = swprintf(str, 1024, L"0x%x", file->TimeDateStamp);
+	ListViewAddItem(l, 3, 1, str);
+
+	memset(str, 0, wr);
+	wr = swprintf(str, 1024, L"0x%x", file->PointerToSymbolTable);
+	ListViewAddItem(l, 4, 1, str);
+
+	memset(str, 0, wr);
+	wr = swprintf(str, 1024, L"%d", file->NumberOfSymbols);
+	ListViewAddItem(l, 5, 1, str);
+
+	memset(str, 0, wr);
+	wr = swprintf(str, 1024, L"0x%x", file->SizeOfOptionalHeader);
+	ListViewAddItem(l, 6, 1, str);
+
+	memset(str, 0, wr);
+	wr = swprintf(str, 1024, L"0x%x", file->Characteristics);
+	ListViewAddItem(l, 7, 1, str);
+	
+	return 0;
+}
+
+int ReadImports(char* filename, WINDOW_DATA *data)
 {
 	int status = ST_SUCCESS;
 	FILE* f = NULL;
@@ -473,6 +266,9 @@ int ReadImports(char* filename, HWND list, HWND tree, HTREEITEM root)
 		goto cleanup2;
 	}
 
+
+	FillHeaderListView(data->headerListView, Signature, &FileHeader, OptionalHeader, Magic);
+
 	// ****
 
 	size_t sectionTableSize = FileHeader.NumberOfSections * sizeof(IMAGE_SECTION_HEADER);
@@ -590,7 +386,7 @@ int ReadImports(char* filename, HWND list, HWND tree, HTREEITEM root)
 		tItem->Data = copy;
 
 		TVINSERTSTRUCT imp = {0};
-		imp.hParent = root;
+		imp.hParent = data->treeRoot;
 		imp.hInsertAfter = TVI_FIRST;
 		imp.item.mask = TVIF_TEXT | TVIF_STATE | TVIF_PARAM;
 		imp.item.pszText = namew;
@@ -599,7 +395,7 @@ int ReadImports(char* filename, HWND list, HWND tree, HTREEITEM root)
 		imp.item.stateMask = TVIS_EXPANDED;
 		imp.item.lParam = tItem;
 
-		HTREEITEM himp = SendMessage(tree, TVM_INSERTITEM, 0, &imp);
+		HTREEITEM himp = SendMessage(data->tree, TVM_INSERTITEM, 0, &imp);
 
 		//SendMessage(list, LB_ADDSTRING, 0, (LPARAM)namew);
 
@@ -670,7 +466,7 @@ int ReadImports(char* filename, HWND list, HWND tree, HTREEITEM root)
 					name.item.stateMask = TVIS_EXPANDED;
 					name.item.lParam = tItem;
 
-					SendMessage(tree, TVM_INSERTITEM, 0, &name);
+					SendMessage(data->tree, TVM_INSERTITEM, 0, &name);
 
 				}
 				else
@@ -730,7 +526,7 @@ int ReadImports(char* filename, HWND list, HWND tree, HTREEITEM root)
 					name.item.stateMask = TVIS_EXPANDED;
 					name.item.lParam = tItem;
 
-					SendMessage(tree, TVM_INSERTITEM, 0, &name);
+					SendMessage(data->tree, TVM_INSERTITEM, 0, &name);
 
 				}
 
@@ -796,7 +592,7 @@ int ReadImports(char* filename, HWND list, HWND tree, HTREEITEM root)
 					name.item.stateMask = TVIS_EXPANDED;
 					name.item.lParam = tItem;
 
-					SendMessage(tree, TVM_INSERTITEM, 0, &name);
+					SendMessage(data->tree, TVM_INSERTITEM, 0, &name);
 
 				}
 				else
@@ -856,7 +652,7 @@ int ReadImports(char* filename, HWND list, HWND tree, HTREEITEM root)
 					name.item.stateMask = TVIS_EXPANDED;
 					name.item.lParam = tItem;
 
-					SendMessage(tree, TVM_INSERTITEM, 0, &name);
+					SendMessage(data->tree, TVM_INSERTITEM, 0, &name);
 
 				}
 
@@ -1038,33 +834,8 @@ LRESULT Wndproc(
 			exit(1);
 		}
 
-
-		data->loadButton = CreateWindow(
-			L"BUTTON",
-			L"Read KUSER_SHARED_DATA",
-			WS_TABSTOP | WS_CHILD | BS_DEFPUSHBUTTON,
-			10,         
-			10,         
-			200,        
-			30,       
-			unnamedParam1,
-			(HMENU)100,
-			GetWindowLongPtr(unnamedParam1, GWLP_HINSTANCE),
-			NULL);
-
-		data->listBox = CreateWindow(
-			L"LISTBOX",
-			NULL,
-			WS_CHILD | WS_BORDER | WS_VSCROLL,
-			10, 50, 460, 330,
-			unnamedParam1,
-			(HMENU)101,
-			GetWindowLongPtr(unnamedParam1, GWLP_HINSTANCE),
-			NULL
-		);
-
 		INITCOMMONCONTROLSEX comctl;
-		comctl.dwICC = ICC_TAB_CLASSES | ICC_TREEVIEW_CLASSES;
+		comctl.dwICC = ICC_TAB_CLASSES | ICC_TREEVIEW_CLASSES | ICC_LISTVIEW_CLASSES;
 		comctl.dwSize = sizeof(INITCOMMONCONTROLSEX);
 		if (!InitCommonControlsEx(&comctl))
 		{
@@ -1077,15 +848,55 @@ LRESULT Wndproc(
 		data->tabs = CreateWindow(
 			WC_TABCONTROL,
 			NULL,
-			WS_CHILD | WS_CLIPSIBLINGS | WS_VISIBLE,
+			WS_CHILD | WS_CLIPSIBLINGS,
 			0,
 			0,
 			clientRect.right,
 			clientRect.bottom,
 			unnamedParam1,
-			NULL,
+			IDC_MAIN_TABS,
 			GetWindowLongPtr(unnamedParam1, GWLP_HINSTANCE),
 			NULL);
+
+
+		TCITEM tab = { 0 };
+		tab.mask = TCIF_TEXT;
+		tab.pszText = L"PE header";
+
+		SendMessage(data->tabs, TCM_INSERTITEM, 0, &tab);
+
+		tab.pszText = L".idata";
+		SendMessage(data->tabs, TCM_INSERTITEM, 1, &tab);
+		
+		SendMessage(data->tabs, TCM_ADJUSTRECT, FALSE, &clientRect);
+
+		data->headerListView = CreateWindow(
+			WC_LISTVIEW,
+			NULL,
+			WS_CHILD | WS_BORDER | LVS_REPORT, //| LVS_NOCOLUMNHEADER,
+			clientRect.left,
+			clientRect.top,
+			clientRect.right - clientRect.left,
+			clientRect.bottom - clientRect.top,
+			unnamedParam1,
+			IDC_HEADER_LISTVIEW,
+			GetWindowLongPtr(unnamedParam1, GWLP_HINSTANCE),
+			NULL);
+
+
+		LVCOLUMN nameColumn = { 0 };
+		nameColumn.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+		nameColumn.pszText = L"Property";
+		nameColumn.cx = 150;
+		ListView_InsertColumn(data->headerListView, 0, &nameColumn);
+
+		LVCOLUMN valueColumn = { 0 };
+		valueColumn.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+		valueColumn.pszText = L"Value";
+		valueColumn.cx = 150;
+		ListView_InsertColumn(data->headerListView, 1, &valueColumn);
+
+		ListView_SetExtendedListViewStyle(data->headerListView, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
 
 		data->dropNotice = CreateWindow(
 			L"STATIC",
@@ -1096,20 +907,21 @@ LRESULT Wndproc(
 			300,
 			30,
 			unnamedParam1,
-			(HMENU)102,
+			IDC_MAIN_LABEL,
 			GetWindowLongPtr(unnamedParam1, GWLP_HINSTANCE),
 			NULL);
+
 
 		data->tree = CreateWindow(
 			WC_TREEVIEW,
 			NULL,
 			WS_CHILD | WS_BORDER | TVS_HASLINES | TVS_LINESATROOT | TVS_HASBUTTONS,
-			0,
-			0,
-			clientRect.right,
-			clientRect.bottom,
+			clientRect.left,
+			clientRect.top,
+			clientRect.right - clientRect.left,  
+			clientRect.bottom - clientRect.top, 
 			unnamedParam1,
-			(HMENU)103,
+			IDC_IMPORT_TREEVIEW,
 			GetWindowLongPtr(unnamedParam1, GWLP_HINSTANCE),
 			NULL);
 
@@ -1135,7 +947,7 @@ LRESULT Wndproc(
 			SetSysColors(4, elements, data->oldColors);
 		}
 
-
+		FreeTreeViewUserData(data->tree, data->treeRoot);
 		free(data);
 
 		PostQuitMessage(0);
@@ -1145,7 +957,29 @@ LRESULT Wndproc(
 
 	case WM_NOTIFY:
 	{
-		if (((LPNMHDR)unnamedParam4)->idFrom == 103 && ((LPNMHDR)unnamedParam4)->code == NM_RCLICK)
+		if (((LPNMHDR)unnamedParam4)->idFrom == IDC_MAIN_TABS && ((LPNMHDR)unnamedParam4)->code == TCN_SELCHANGE) {
+			int tab = SendMessage(((LPNMHDR)unnamedParam4)->hwndFrom, TCM_GETCURSEL, 0, 0);
+
+			switch (tab)
+			{
+			case 0:
+			{
+				ShowWindow(GetDlgItem(unnamedParam1, IDC_HEADER_LISTVIEW), SW_SHOW);
+				ShowWindow(GetDlgItem(unnamedParam1, IDC_IMPORT_TREEVIEW), SW_HIDE);
+				break;
+			}
+			case 1:
+			{
+				ShowWindow(GetDlgItem(unnamedParam1, IDC_IMPORT_TREEVIEW), SW_SHOW);
+				ShowWindow(GetDlgItem(unnamedParam1, IDC_HEADER_LISTVIEW), SW_HIDE);
+				break;
+			}
+
+			}
+		}
+
+
+		if (((LPNMHDR)unnamedParam4)->idFrom == IDC_IMPORT_TREEVIEW && ((LPNMHDR)unnamedParam4)->code == NM_RCLICK)
 		{
 
 			POINT p;
@@ -1247,6 +1081,7 @@ LRESULT Wndproc(
 
 	case WM_COMMAND:
 	{
+#if 0
 		WINDOW_DATA* data = GetWindowLongPtr(unnamedParam1, GWLP_USERDATA);
 
 		if (HIWORD(unnamedParam3) == BN_CLICKED)
@@ -1255,10 +1090,10 @@ LRESULT Wndproc(
 			{
 			case 100:
 				
-				ReadSharedData(data->listBox);
+				// future buttons
 			}
 		}
-
+#endif
 		break;
 	}
 
@@ -1308,22 +1143,13 @@ LRESULT Wndproc(
 
 		data->treeRoot = SendMessage(data->tree, TVM_INSERTITEM, 0, &root);
 
-		int status = ReadImports(file, data->listBox, data->tree, data->treeRoot);
-
-		/*
-		#define ST_SUCCESS 0
-		#define ST_OPEN_ERROR 1
-		#define ST_NOT_IMAGE_ERROR 2
-		#define ST_PARSE_ERROR 3
-		#define ST_MEMORY_ERROR 4
-		*/
+		int status = ReadImports(file, data);
 
 
 		if (status)
 		{
 			FreeTreeViewUserData(data->tree, data->treeRoot);
 			SendMessage(data->tree, TVM_DELETEITEM, 0, data->treeRoot);
-			//SendMessage(data->listBox, LB_RESETCONTENT, 0, 0);
 
 			switch (status)
 			{
@@ -1358,10 +1184,10 @@ LRESULT Wndproc(
 		} 
 		else
 		{
-			ShowWindow(GetDlgItem(unnamedParam1, 102), SW_HIDE);
-			//ShowWindow(GetDlgItem(unnamedParam1, 101), SW_SHOW);
-			ShowWindow(GetDlgItem(unnamedParam1, 103), SW_SHOW);
-			//ShowWindow(GetDlgItem(unnamedParam1, 100), SW_SHOW);
+			ShowWindow(GetDlgItem(unnamedParam1, IDC_MAIN_LABEL), SW_HIDE);
+			//ShowWindow(GetDlgItem(unnamedParam1, IDC_IMPORT_TREEVIEW), SW_SHOW);
+			ShowWindow(GetDlgItem(unnamedParam1, IDC_HEADER_LISTVIEW), SW_SHOW);
+			ShowWindow(GetDlgItem(unnamedParam1, IDC_MAIN_TABS), SW_SHOW);
 		}
 
 
