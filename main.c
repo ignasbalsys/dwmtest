@@ -1,42 +1,5 @@
 #define _CRT_SECURE_NO_WARNINGS 1
-#include <Windows.h>
-#include <dwmapi.h>
-#include <uxtheme.h>
-
-#include <phnt_windows.h>
-#include <phnt.h>
-
-#include <stdio.h>
-
-#include "controls.h"
-#include "hdrtab.h"
-
-typedef struct _WINDOW_DATA
-{
-	HWND main;
-
-	HWND headerListView;
-	HWND dropNotice;
-	HWND tabs;
-	HWND tree;
-	HTREEITEM treeRoot;
-
-	BOOL hasBackup;
-	DWORD oldColors[4];
-} WINDOW_DATA, *PWINDOW_DATA;
-
-typedef enum TreeItemType {
-	Import = 1,
-	Thunk32,
-	Thunk64
-} TreeItemType;
-
-typedef struct _TREE_ITEM
-{
-	TreeItemType Type;
-	void* Data;
-} TREE_ITEM;
-
+#include "dwmtest.h"
 
 DWORD RvaToFileOffset(IMAGE_SECTION_HEADER *s, DWORD sectionCount, DWORD rva)
 {
@@ -52,144 +15,675 @@ DWORD RvaToFileOffset(IMAGE_SECTION_HEADER *s, DWORD sectionCount, DWORD rva)
 	return 0;
 }
 
-
-#define ST_SUCCESS 0
-#define ST_OPEN_ERROR 1
-#define ST_NOT_IMAGE_ERROR 2
-#define ST_PARSE_ERROR 3
-#define ST_MEMORY_ERROR 4
-
-void ListViewAddItem(HWND list, int row, int col, wchar_t* text)
+void GetSectionNameFromDataRva(DWORD rva, wchar_t* name, int strLen, IMAGE_SECTION_HEADER *s, DWORD sectionCount)
 {
-	if (col == 0)
+	for (int i = 0; i < sectionCount; i++)
 	{
-		LVITEM lvi = { 0 };
+		if (s[i].VirtualAddress <= rva && rva < s[i].VirtualAddress + s[i].Misc.VirtualSize)
+		{
 
-		lvi.mask = LVIF_TEXT;
-		lvi.iItem = row;
-		lvi.iSubItem = 0;
-		lvi.pszText = text;
+			MultiByteToWideChar(
+				CP_ACP,
+				0,
+				s[i].Name,
+				8,
+				name,
+				9
+			);
 
-		ListView_InsertItem(list, &lvi);
-	}
-	else 
-	{
-		ListView_SetItemText(list, row, col, text);
+			break;
+
+		}
 	}
 }
 
-#define HEADER_VALUE_PRINT(format, value, row) memset(str, 0, wr * sizeof(wchar_t));  wr = swprintf(str, 1024, format, value);  ListViewAddItem(l, row, 1, str); 
-#define HEADER_VALUE_PRINT2(format, value, value1, row) memset(str, 0, wr * sizeof(wchar_t));  wr = swprintf(str, 1024, format, value, value1);  ListViewAddItem(l, row, 1, str); 
-
-int FillHeaderListView(HWND l, DWORD signature, IMAGE_FILE_HEADER *file, VOID *optional, DWORD magic)
+int LoadImports(FILE* f, DWORD importRva, DWORD importSize, WINDOW_DATA* data, IMAGE_SECTION_HEADER *sections, DWORD numberOfSections, DWORD Magic)
 {
-	wchar_t str[1024] = { 0 };
+	int status = 0;
 
-	for (int i = 0; i < sizeof(headerTabProperties) / sizeof(uintptr_t); i++)
+	DWORD importFileOff = RvaToFileOffset(sections, numberOfSections, importRva);
+
+	if (fseek(f, importFileOff, SEEK_SET))
 	{
-		if (i == 16 && magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+		/* No import table */
+		return ST_PARSE_ERROR;
+		
+	}
+
+	IMAGE_IMPORT_DESCRIPTOR* descriptors = malloc(importSize);
+	if (!descriptors)
+	{
+		status = ST_MEMORY_ERROR;
+		goto cleanup1;
+	}
+
+	if (fread(descriptors, importSize, 1, f) < 1)
+	{
+		/* Could not read import descriptors */
+		status = ST_PARSE_ERROR;
+		goto cleanup1;
+	}
+
+	for (int i = 0; i < (importSize / sizeof(IMAGE_IMPORT_DESCRIPTOR)); i++)
+	{
+		if (descriptors[i].Characteristics == 0)
 		{
-			continue;
+			break;
 		}
 
-		ListViewAddItem(l, i, 0, headerTabProperties[i]);
+		DWORD offset = RvaToFileOffset(sections, numberOfSections, descriptors[i].Name);
+
+		char name[256] = { 0 };
+		wchar_t namew[256] = { 0 };
+		int ii = 0;
+
+		if (fseek(f, offset, SEEK_SET))
+		{
+			status = ST_PARSE_ERROR;
+			goto cleanup1;
+		}
+
+		while (ii < 256 && fread(&name[ii], 1, 1, f) == 1 && name[ii] != 0)
+		{
+			ii++;
+		}
+
+		MultiByteToWideChar(
+			CP_ACP,
+			0,
+			name,
+			strlen(name),
+			namew,
+			256
+		);
+
+		IMAGE_IMPORT_DESCRIPTOR* copy = malloc(sizeof(IMAGE_IMPORT_DESCRIPTOR));
+		if (!copy)
+		{
+			status = ST_MEMORY_ERROR;
+			goto cleanup1;
+		}
+		memcpy(copy, &descriptors[i], sizeof(IMAGE_IMPORT_DESCRIPTOR));
+
+		TREE_ITEM* tItem = malloc(sizeof(TREE_ITEM));
+		if (!tItem)
+		{
+			status = ST_MEMORY_ERROR;
+			free(copy);
+			goto cleanup1;
+		}
+
+		tItem->Type = Import;
+		tItem->Data = copy;
+
+		TVINSERTSTRUCT imp = { 0 };
+		imp.hParent = data->dirTreeRoot[1];
+		imp.hInsertAfter = TVI_FIRST;
+		imp.item.mask = TVIF_TEXT | TVIF_PARAM;
+		imp.item.pszText = namew;
+		imp.item.cchTextMax = lstrlenW(namew);
+		imp.item.lParam = tItem;
+
+		HTREEITEM himp = SendMessage(data->dirTree[1], TVM_INSERTITEM, 0, &imp);
+
+		DWORD iatOffset = RvaToFileOffset(sections, numberOfSections, descriptors[i].OriginalFirstThunk);
+		if (fseek(f, iatOffset, SEEK_SET))
+		{
+			status = ST_PARSE_ERROR;
+			free(copy);
+			free(tItem);
+			goto cleanup1;
+		}
+
+
+		void* thunks = NULL;
+		int thunkIndex = 0;
+		if (Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+		{
+			thunks = malloc(sizeof(IMAGE_THUNK_DATA32) * 256);
+			if (!thunks)
+			{
+				status = ST_MEMORY_ERROR;
+				goto cleanup1;
+			}
+
+			while (
+				thunkIndex < 256 &&
+				fread(&((IMAGE_THUNK_DATA32*)thunks)[thunkIndex], sizeof(IMAGE_THUNK_DATA32), 1, f) == 1 &&
+				((IMAGE_THUNK_DATA32*)thunks)[thunkIndex].u1.AddressOfData != 0
+				)
+			{
+				IMAGE_THUNK_DATA32* copy = malloc(sizeof(IMAGE_THUNK_DATA32));
+				if (!copy)
+				{
+					status = ST_MEMORY_ERROR;
+					free(thunks);
+					goto cleanup1;
+				}
+				memcpy(copy, &((IMAGE_THUNK_DATA32*)thunks)[thunkIndex], sizeof(IMAGE_THUNK_DATA32));
+
+				TREE_ITEM* tItem = malloc(sizeof(TREE_ITEM));
+				if (!tItem)
+				{
+					free(copy);
+					free(thunks);
+					status = ST_MEMORY_ERROR;
+					goto cleanup1;
+				}
+
+				tItem->Type = Thunk32;
+				tItem->Data = copy;
+
+				if ((((IMAGE_THUNK_DATA32*)thunks)[thunkIndex].u1.Ordinal >> 31) == 1)
+				{
+					/* Imported by ordinal */
+					int ordinal = ((IMAGE_THUNK_DATA32*)thunks)[thunkIndex].u1.AddressOfData & 0xFFFF;
+					wchar_t importNameW[256] = { 0 };
+
+					swprintf(importNameW, 256, L"- #%u", ordinal);
+
+					TVINSERTSTRUCT name = { 0 };
+					name.hParent = himp;
+					name.hInsertAfter = TVI_FIRST;
+					name.item.mask = TVIF_TEXT | TVIF_PARAM;
+					name.item.pszText = importNameW;
+					name.item.cchTextMax = lstrlenW(importNameW);
+					name.item.lParam = tItem;
+
+					SendMessage(data->dirTree[1], TVM_INSERTITEM, 0, &name);
+
+				}
+				else
+				{
+					/* Imported by name */
+					int nameRva = ((IMAGE_THUNK_DATA32*)thunks)[thunkIndex].u1.AddressOfData & 0x3FFFFFFF;
+					DWORD importNameOffset = RvaToFileOffset(sections, numberOfSections, nameRva) + 2; // + 2 Hint
+
+					char importName[256] = { 0 };
+					wchar_t importNameW[256] = { 0 };
+					int importNameIndex = 0;
+
+					if (fseek(f, importNameOffset, SEEK_SET))
+					{
+						status = ST_PARSE_ERROR;
+						free(copy);
+						free(thunks);
+						free(tItem);
+						goto cleanup1;
+					}
+
+					while (importNameIndex < 256 && fread(&importName[importNameIndex], 1, 1, f) == 1 && importName[importNameIndex] != 0)
+					{
+						importNameIndex++;
+					}
+
+					/* Reset file pointer for next thunk */
+					if (fseek(f, iatOffset + thunkIndex * sizeof(IMAGE_THUNK_DATA32), SEEK_SET))
+					{
+						status = ST_PARSE_ERROR;
+						free(copy);
+						free(thunks);
+						free(tItem);
+						goto cleanup1;
+					}
+
+
+					MultiByteToWideChar(
+						CP_ACP,
+						0,
+						importName,
+						strlen(importName),
+						importNameW,
+						256
+					);
+
+					wchar_t res[256] = { 0 };
+					swprintf(res, 256, L"- %s", importNameW);
+
+					TVINSERTSTRUCT name = { 0 };
+					name.hParent = himp;
+					name.hInsertAfter = TVI_FIRST;
+					name.item.mask = TVIF_TEXT | TVIF_PARAM;
+					name.item.pszText = importNameW;
+					name.item.cchTextMax = lstrlenW(importNameW);
+					name.item.lParam = tItem;
+
+					SendMessage(data->dirTree[1], TVM_INSERTITEM, 0, &name);
+
+				}
+
+				thunkIndex++;
+			}
+		}
+		else if (Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+		{
+			thunks = malloc(sizeof(IMAGE_THUNK_DATA64) * 256);
+			if (!thunks)
+			{
+				status = ST_MEMORY_ERROR;
+				goto cleanup1;
+			}
+
+			while (
+				thunkIndex < 256 &&
+				fread(&((IMAGE_THUNK_DATA64*)thunks)[thunkIndex], sizeof(IMAGE_THUNK_DATA64), 1, f) == 1 &&
+				((IMAGE_THUNK_DATA64*)thunks)[thunkIndex].u1.AddressOfData != 0
+				)
+			{
+				IMAGE_THUNK_DATA64* copy = malloc(sizeof(IMAGE_THUNK_DATA64));
+				if (!copy)
+				{
+					status = ST_MEMORY_ERROR;
+					free(thunks);
+					goto cleanup1;
+				}
+				memcpy(copy, &((IMAGE_THUNK_DATA64*)thunks)[thunkIndex], sizeof(IMAGE_THUNK_DATA64));
+
+				TREE_ITEM* tItem = malloc(sizeof(TREE_ITEM));
+				if (!tItem)
+				{
+					free(copy);
+					free(thunks);
+					status = ST_MEMORY_ERROR;
+					goto cleanup1;
+				}
+
+				tItem->Type = Thunk64;
+				tItem->Data = copy;
+
+				if ((((IMAGE_THUNK_DATA64*)thunks)[thunkIndex].u1.Ordinal >> 63) == 1)
+				{
+					/* Imported by ordinal */
+					int ordinal = ((IMAGE_THUNK_DATA64*)thunks)[thunkIndex].u1.AddressOfData & 0xFFFF;
+					wchar_t importNameW[256] = { 0 };
+
+					swprintf(importNameW, 256, L"- #%u", ordinal);
+
+					TVINSERTSTRUCT name = { 0 };
+					name.hParent = himp;
+					name.hInsertAfter = TVI_FIRST;
+					name.item.mask = TVIF_TEXT | TVIF_PARAM;
+					name.item.pszText = importNameW;
+					name.item.cchTextMax = lstrlenW(importNameW);
+					name.item.lParam = tItem;
+
+					SendMessage(data->dirTree[1], TVM_INSERTITEM, 0, &name);
+
+				}
+				else
+				{
+					/* Imported by name */
+					int nameRva = ((IMAGE_THUNK_DATA64*)thunks)[thunkIndex].u1.AddressOfData & 0x3FFFFFFF;
+					DWORD importNameOffset = RvaToFileOffset(sections, numberOfSections, nameRva) + 2; // + 2 Hint
+
+					char importName[256] = { 0 };
+					wchar_t importNameW[256] = { 0 };
+					int importNameIndex = 0;
+
+					if (fseek(f, importNameOffset, SEEK_SET))
+					{
+						status = ST_PARSE_ERROR;
+						free(copy);
+						free(thunks);
+						free(tItem);
+						goto cleanup1;
+					}
+
+					while (importNameIndex < 256 && fread(&importName[importNameIndex], 1, 1, f) == 1 && importName[importNameIndex] != 0)
+					{
+						importNameIndex++;
+					}
+
+					/* Reset file pointer for next thunk */
+					if (fseek(f, iatOffset + thunkIndex * sizeof(IMAGE_THUNK_DATA64), SEEK_SET))
+					{
+						status = ST_PARSE_ERROR;
+						free(copy);
+						free(thunks);
+						free(tItem);
+						goto cleanup1;
+					}
+
+
+					MultiByteToWideChar(
+						CP_ACP,
+						0,
+						importName,
+						strlen(importName),
+						importNameW,
+						256
+					);
+
+					wchar_t res[256] = { 0 };
+					swprintf(res, 256, L"- %s", importNameW);
+
+					TVINSERTSTRUCT name = { 0 };
+					name.hParent = himp;
+					name.hInsertAfter = TVI_LAST;
+					name.item.mask = TVIF_TEXT | TVIF_PARAM;
+					name.item.pszText = importNameW;
+					name.item.cchTextMax = lstrlenW(importNameW);
+					name.item.lParam = tItem;
+
+					SendMessage(data->dirTree[1], TVM_INSERTITEM, 0, &name);
+
+				}
+
+				thunkIndex++;
+			}
+		}
+		else
+		{
+			free(copy);
+			free(tItem);
+			break;
+		}
+
+		free(thunks);
 	}
 
-	int wr = 0;
-	int index = 0;
+	cleanup1:
+	free(descriptors);
+	return status;
+}
 
-	HEADER_VALUE_PRINT(L"0x%x", signature, index++);
-	HEADER_VALUE_PRINT(L"0x%x", file->Machine, index++);
-	HEADER_VALUE_PRINT(L"%d", file->NumberOfSections, index++);
-	HEADER_VALUE_PRINT(L"0x%x", file->TimeDateStamp, index++);
-	HEADER_VALUE_PRINT(L"0x%x", file->PointerToSymbolTable, index++);
-	HEADER_VALUE_PRINT(L"%d", file->NumberOfSymbols, index++);
-	HEADER_VALUE_PRINT(L"0x%x", file->SizeOfOptionalHeader, index++);
-	HEADER_VALUE_PRINT(L"0x%x", file->Characteristics, index++);
+HTREEITEM TVInsert(HWND tree, HTREEITEM parent, wchar_t *format, DWORD value)
+{
+	wchar_t str[256] = { 0 };
+	swprintf(str, 256, format, value);
 
-	HEADER_VALUE_PRINT(L"0x%x", magic, index++);
+	TVINSERTSTRUCT i = { 0 };
+	i.hParent = parent;
+	i.hInsertAfter = TVI_LAST;
+	i.item.mask = TVIF_TEXT;
+	i.item.pszText = str;
+	i.item.cchTextMax = lstrlenW(str);
+
+	return SendMessage(tree, TVM_INSERTITEM, 0, &i);
+}
+
+int LoadExports(FILE* f, DWORD exportRva, DWORD exportSize, WINDOW_DATA* data, IMAGE_SECTION_HEADER* sections, DWORD numberOfSections, DWORD Magic)
+{
+	int status = 0;
+
+	DWORD exportFileOff = RvaToFileOffset(sections, numberOfSections, exportRva);
+
+	if (fseek(f, exportFileOff, SEEK_SET))
+	{
+		/* No import table */
+		return ST_PARSE_ERROR;
+	}
+
+	IMAGE_EXPORT_DIRECTORY* e = malloc(sizeof(IMAGE_EXPORT_DIRECTORY));
+	if (!e)
+	{
+		return ST_MEMORY_ERROR;
+	}
+
+	if (fread(e, sizeof(IMAGE_EXPORT_DIRECTORY), 1, f) < 1)
+	{
+		/* Could not read import descriptors */
+		status = ST_PARSE_ERROR;
+		goto cleanup1;
+	}
+	/*
+	DWORD   Characteristics;
+    DWORD   TimeDateStamp;
+    WORD    MajorVersion;
+    WORD    MinorVersion;
+    DWORD   Name;
+    DWORD   Base;
+    DWORD   NumberOfFunctions;
+    DWORD   NumberOfNames;
+	*/
 	
-	IMAGE_DATA_DIRECTORY* dataDirectory = NULL;
-	if (magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+	TVInsert(data->dirTree[0], data->dirTreeRoot[0], L"Characteristics: 0x%x", e->Characteristics);
+	TVInsert(data->dirTree[0], data->dirTreeRoot[0], L"TimeDateStamp: %u", e->TimeDateStamp);
+	TVInsert(data->dirTree[0], data->dirTreeRoot[0], L"MajorVersion: %u", e->MajorVersion);
+	TVInsert(data->dirTree[0], data->dirTreeRoot[0], L"MinorVersion: %u", e->MinorVersion);
+	TVInsert(data->dirTree[0], data->dirTreeRoot[0], L"Name: %x", e->Name);
+	TVInsert(data->dirTree[0], data->dirTreeRoot[0], L"Base: %u", e->Base);
+	TVInsert(data->dirTree[0], data->dirTreeRoot[0], L"NumberOfFunctions: %u", e->NumberOfFunctions);
+	TVInsert(data->dirTree[0], data->dirTreeRoot[0], L"NumberOfNames: %u", e->NumberOfNames);
+	HTREEITEM funcs = TVInsert(data->dirTree[0], data->dirTreeRoot[0], L"Functions", 0);
+
+	DWORD* addressesOfNames = malloc(sizeof(DWORD) * e->NumberOfFunctions);
+	if (!addressesOfNames)
 	{
-		IMAGE_OPTIONAL_HEADER32* op = (IMAGE_OPTIONAL_HEADER32*)optional;
+		status = ST_MEMORY_ERROR;
 
-		HEADER_VALUE_PRINT(L"0x%x", op->MajorLinkerVersion, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->MinorLinkerVersion, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfCode, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfInitializedData, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfUninitializedData, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->AddressOfEntryPoint, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->BaseOfCode, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->BaseOfData, index++);
-
-		HEADER_VALUE_PRINT(L"0x%x", op->ImageBase, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->SectionAlignment, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->FileAlignment, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->MajorOperatingSystemVersion, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->MinorOperatingSystemVersion, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->MajorImageVersion, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->MinorImageVersion, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->MajorSubsystemVersion, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->MinorSubsystemVersion, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->Win32VersionValue, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfImage, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfHeaders, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->CheckSum, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->Subsystem, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->DllCharacteristics, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfStackReserve, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfStackCommit, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfHeapReserve, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfHeapCommit, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->LoaderFlags, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->NumberOfRvaAndSizes, index++);
-
-		dataDirectory = op->DataDirectory;
-	}
-	else
-	{
-		IMAGE_OPTIONAL_HEADER64* op = (IMAGE_OPTIONAL_HEADER64*)optional;
-
-		HEADER_VALUE_PRINT(L"0x%x", op->MajorLinkerVersion, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->MinorLinkerVersion, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfCode, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfInitializedData, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfUninitializedData, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->AddressOfEntryPoint, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->BaseOfCode, index++);
-
-		HEADER_VALUE_PRINT(L"0x%llx", op->ImageBase, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->SectionAlignment, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->FileAlignment, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->MajorOperatingSystemVersion, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->MinorOperatingSystemVersion, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->MajorImageVersion, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->MinorImageVersion, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->MajorSubsystemVersion, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->MinorSubsystemVersion, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->Win32VersionValue, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfImage, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->SizeOfHeaders, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->CheckSum, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->Subsystem, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->DllCharacteristics, index++);
-		HEADER_VALUE_PRINT(L"0x%llx", op->SizeOfStackReserve, index++);
-		HEADER_VALUE_PRINT(L"0x%llx", op->SizeOfStackCommit, index++);
-		HEADER_VALUE_PRINT(L"0x%llx", op->SizeOfHeapReserve, index++);
-		HEADER_VALUE_PRINT(L"0x%llx", op->SizeOfHeapCommit, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->LoaderFlags, index++);
-		HEADER_VALUE_PRINT(L"0x%x", op->NumberOfRvaAndSizes, index++);
-
-		dataDirectory = op->DataDirectory;
+		goto cleanup1;
 	}
 
-	for (int i = 0; i < 15; i++)
+	DWORD* addressesOfFuncs = malloc(sizeof(DWORD) * e->NumberOfFunctions);
+	if (!addressesOfFuncs)
 	{
-		HEADER_VALUE_PRINT2(L"0x%x (%x bytes)", dataDirectory[i].VirtualAddress, dataDirectory[i].Size, index++);
+		status = ST_MEMORY_ERROR;
+		free(addressesOfNames);
+
+		goto cleanup1;
 	}
+	WORD* addressesOfOrdinals = malloc(sizeof(WORD) * e->NumberOfFunctions);
+	if (!addressesOfOrdinals)
+	{
+		status = ST_MEMORY_ERROR;
+		free(addressesOfNames);
+		free(addressesOfFuncs);
+
+		goto cleanup1;
+	}
+
+
+	DWORD namesRva = RvaToFileOffset(sections, numberOfSections, e->AddressOfNames);
+	//if (fseek(f, e->AddressOfNames, SEEK_SET))
+	if (fseek(f, namesRva, SEEK_SET))
+	{
+		status = ST_PARSE_ERROR;
+		goto cleanup2;
+	}
+
+	//if (fread(addressesOfNames, sizeof(DWORD) * e->NumberOfFunctions, 1, f) < 1)
+	if (fread(addressesOfNames, sizeof(DWORD) * e->NumberOfNames, 1, f) < 1)
+	{
+		status = ST_PARSE_ERROR;
+		goto cleanup2;
+	}
+
+	// ****
+	DWORD funcsRva = RvaToFileOffset(sections, numberOfSections, e->AddressOfFunctions);
+	//if (fseek(f, e->AddressOfFunctions, SEEK_SET))
+	if (fseek(f, funcsRva, SEEK_SET))
+	{
+		status = ST_PARSE_ERROR;
+		goto cleanup2;
+	}
+
+	if (fread(addressesOfFuncs, sizeof(DWORD) * e->NumberOfFunctions, 1, f) < 1)
+	{
+		status = ST_PARSE_ERROR;
+		goto cleanup2;
+	}
+
+	// ****
+
+	DWORD ordinalsRva = RvaToFileOffset(sections, numberOfSections, e->AddressOfNameOrdinals);
+	if (fseek(f, ordinalsRva, SEEK_SET))
+	{
+		status = ST_PARSE_ERROR;
+		goto cleanup2;
+	}
+
+	if (fread(addressesOfOrdinals, sizeof(WORD) * e->NumberOfFunctions, 1, f) < 1)
+	{
+		status = ST_PARSE_ERROR;
+		goto cleanup2;
+	}
+
+	char* seen = malloc(e->NumberOfFunctions);
+	if (!seen)
+	{
+		status = ST_MEMORY_ERROR;
+		goto cleanup2;
+	}
+	memset(seen, 0, e->NumberOfFunctions);
+
+	for (int i = 0; i < e->NumberOfNames; i++)
+	{
+		DWORD nameRva = addressesOfNames[i];
+		WORD ordinal = addressesOfOrdinals[i];
+		seen[ordinal] = 1;
+
+		DWORD nameOffset = RvaToFileOffset(sections, numberOfSections, nameRva);
+		if (fseek(f, nameOffset, SEEK_SET))
+		{
+			status = ST_PARSE_ERROR;
+			goto cleanup2;
+		}
+
+		char* name = malloc(4096);
+		memset(name, 0, 4096);
+		int nameIndex = 0;
+
+		while (nameIndex < 4096 && fread(&name[nameIndex], 1, 1, f) == 1 && name[nameIndex] != 0)
+		{
+			nameIndex++;
+		}
+
+		wchar_t* namew = malloc(4096 * sizeof(wchar_t));
+		memset(namew, 0, 4096 * sizeof(wchar_t));
+
+		MultiByteToWideChar(
+			CP_ACP,
+			0,
+			name,
+			strlen(name),
+			namew,
+			4096
+		);
+
+
+
+		HTREEITEM func = TVInsert(data->dirTree[0], funcs, namew, 0);
+		TVInsert(data->dirTree[0], func, L"Ordinal: %u", ordinal + e->Base);
+		TVInsert(data->dirTree[0], func, L"Name RVA: 0x%x", nameRva);
+		TVInsert(data->dirTree[0], func, L"Function RVA: 0x%x", addressesOfFuncs[ordinal]); // ordinal - base ?
+
+		if (addressesOfFuncs[i] >= exportRva && addressesOfFuncs[i] < exportRva + exportSize)
+		{
+			/* Forwarder !! */
+			DWORD forwarderRva = RvaToFileOffset(sections, numberOfSections, addressesOfFuncs[i]);
+			if (fseek(f, forwarderRva, SEEK_SET))
+			{
+				status = ST_PARSE_ERROR;
+				goto cleanup2;
+			}
+
+			char* name = malloc(4096);
+			memset(name, 0, 4096);
+			int nameIndex = 0;
+
+			while (nameIndex < 4096 && fread(&name[nameIndex], 1, 1, f) == 1 && name[nameIndex] != 0)
+			{
+				nameIndex++;
+			}
+
+			wchar_t* namew = malloc(4096 * sizeof(wchar_t));
+			memset(namew, 0, 4096 * sizeof(wchar_t));
+
+			MultiByteToWideChar(
+				CP_ACP,
+				0,
+				name,
+				strlen(name),
+				namew,
+				4096
+			);
+
+			wchar_t* nameww = malloc(4096 * sizeof(wchar_t));
+			memset(nameww, 0, 4096 * sizeof(wchar_t));
+
+			swprintf(nameww, 4096, L"Forwarder name: %s", namew);
+
+			TVInsert(data->dirTree[0], func, nameww, 0);
+
+			free(name);
+			free(namew);
+			free(nameww);
+		}
+
+		free(namew);
+		free(name);
+	}
+
+
+	for (int i = 0; i < e->NumberOfFunctions; i++)
+	{
+		if (!seen[i])
+		{
+			wchar_t namew[256] = { 0 };
+			swprintf(namew, 256, L"@%u", i + e->Base);
+
+			HTREEITEM func = TVInsert(data->dirTree[0], funcs, namew, 0);
+
+			TVInsert(data->dirTree[0], func, L"Ordinal: %u", i + e->Base);
+			TVInsert(data->dirTree[0], func, L"Name RVA: 0x%x", 0);
+			TVInsert(data->dirTree[0], func, L"Function RVA: 0x%x", addressesOfFuncs[i]); // ordinal - base ?
+
+			if (addressesOfFuncs[i] >= exportRva && addressesOfFuncs[i] < exportRva + exportSize)
+			{
+				/* Forwarder !! */
+				DWORD forwarderRva = RvaToFileOffset(sections, numberOfSections, addressesOfFuncs[i]);
+				if (fseek(f, forwarderRva, SEEK_SET))
+				{
+					status = ST_PARSE_ERROR;
+					goto cleanup2;
+				}
+
+				char* name = malloc(4096);
+				memset(name, 0, 4096);
+				int nameIndex = 0;
+
+				while (nameIndex < 4096 && fread(&name[nameIndex], 1, 1, f) == 1 && name[nameIndex] != 0)
+				{
+					nameIndex++;
+				}
+
+				wchar_t* namew = malloc(4096 * sizeof(wchar_t));
+				memset(namew, 0, 4096 * sizeof(wchar_t));
+
+				MultiByteToWideChar(
+					CP_ACP,
+					0,
+					name,
+					strlen(name),
+					namew,
+					4096
+				);
+
+
+				wchar_t* nameww = malloc(4096 * sizeof(wchar_t));
+				memset(nameww, 0, 4096 * sizeof(wchar_t));
+
+				swprintf(nameww, 4096, L"Forwarder name: %s", namew);
+
+				TVInsert(data->dirTree[0], func, nameww, 0);
+
+				free(name);
+				free(namew);
+				free(nameww);
+			}
+
+		}
+	}
+
+cleanup2:
+	free(addressesOfNames);
+	free(addressesOfFuncs);
+	free(addressesOfOrdinals);
+cleanup1:
+	free(e);
 	
-	return 0;
+	return status;
 }
 
 int ReadImports(char* filename, WINDOW_DATA *data)
@@ -337,6 +831,7 @@ int ReadImports(char* filename, WINDOW_DATA *data)
 
 	// ****
 
+
 	size_t sectionTableSize = FileHeader.NumberOfSections * sizeof(IMAGE_SECTION_HEADER);
 
 	sections = malloc(sectionTableSize);
@@ -357,17 +852,100 @@ int ReadImports(char* filename, WINDOW_DATA *data)
 		goto cleanup4;
 	}
 
+
+	FillSectionTree(data->sectionTree, data->sectionTreeRoot, sections, FileHeader.NumberOfSections);
+
+	// ****
+
+	RECT clientRect = data->crect;
+	int tabIndex = 0;
+
 	if (Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
 	{
 		IMAGE_OPTIONAL_HEADER32* OptionalHeader32 = (IMAGE_OPTIONAL_HEADER32*)OptionalHeader;
-		importVa = OptionalHeader32->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
-		importSize = OptionalHeader32->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size;
+
+		for (int i = 0; i < IMAGE_NUMBEROF_DIRECTORY_ENTRIES; i++)
+		{
+			if (OptionalHeader32->DataDirectory[i].Size)
+			{
+				data->dirTree[i] = CreateWindow(
+					WC_TREEVIEW,
+					NULL,
+					WS_CHILD | WS_BORDER | TVS_HASLINES | TVS_LINESATROOT | TVS_HASBUTTONS,
+					clientRect.left,
+					clientRect.top,
+					clientRect.right - clientRect.left,
+					clientRect.bottom - clientRect.top,
+					data->main,
+					ID_BASE + 5 + i,
+					GetWindowLongPtr(data->main, GWLP_HINSTANCE),
+					NULL);
+
+				wchar_t name[9] = { 0 };
+				GetSectionNameFromDataRva(OptionalHeader32->DataDirectory[i].VirtualAddress, name, 9, sections, FileHeader.NumberOfSections);
+
+				TVINSERTSTRUCT root = { 0 };
+				root.hParent = TVI_ROOT;
+				root.hInsertAfter = TVI_FIRST;
+				root.item.mask = TVIF_TEXT | TVIF_STATE;
+				root.item.pszText = name;
+				root.item.cchTextMax = lstrlenW(name);
+				root.item.state = TVIS_EXPANDED;
+				root.item.stateMask = TVIS_EXPANDED;
+
+				data->dirTreeRoot[i] = SendMessage(data->dirTree[i], TVM_INSERTITEM, 0, &root);
+
+				TCITEM tab = { 0 };
+				tab.mask = TCIF_TEXT;
+				tab.pszText = tabNames[i];
+				SendMessage(data->tabs, TCM_INSERTITEM, tabIndex + 2, &tab);
+				data->tabIndexes[tabIndex++] = ID_BASE + 5 + i;
+			}
+		}
+
 	}
 	else if (Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
 	{
 		IMAGE_OPTIONAL_HEADER64* OptionalHeader64 = (IMAGE_OPTIONAL_HEADER64*)OptionalHeader;
-		importVa = OptionalHeader64->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
-		importSize = OptionalHeader64->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size;
+
+		for (int i = 0; i < IMAGE_NUMBEROF_DIRECTORY_ENTRIES; i++)
+		{
+			if (OptionalHeader64->DataDirectory[i].Size)
+			{
+				data->dirTree[i] = CreateWindow(
+					WC_TREEVIEW,
+					NULL,
+					WS_CHILD | WS_BORDER | TVS_HASLINES | TVS_LINESATROOT | TVS_HASBUTTONS,
+					clientRect.left,
+					clientRect.top,
+					clientRect.right - clientRect.left,
+					clientRect.bottom - clientRect.top,
+					data->main,
+					ID_BASE + 5 + i,
+					GetWindowLongPtr(data->main, GWLP_HINSTANCE),
+					NULL);
+
+				wchar_t name[9] = { 0 };
+				GetSectionNameFromDataRva(OptionalHeader64->DataDirectory[i].VirtualAddress, name, 9, sections, FileHeader.NumberOfSections);
+
+				TVINSERTSTRUCT root = { 0 };
+				root.hParent = TVI_ROOT;
+				root.hInsertAfter = TVI_FIRST;
+				root.item.mask = TVIF_TEXT | TVIF_STATE;
+				root.item.pszText = name;
+				root.item.cchTextMax = lstrlenW(name);
+				root.item.state = TVIS_EXPANDED;
+				root.item.stateMask = TVIS_EXPANDED;
+
+				data->dirTreeRoot[i] = SendMessage(data->dirTree[i], TVM_INSERTITEM, 0, &root);
+
+				TCITEM tab = { 0 };
+				tab.mask = TCIF_TEXT;
+				tab.pszText = tabNames[i];
+				SendMessage(data->tabs, TCM_INSERTITEM, tabIndex + 2, &tab);
+				data->tabIndexes[tabIndex++] = ID_BASE + 5 + i;
+			}
+		}
 	}
 	else
 	{
@@ -375,350 +953,50 @@ int ReadImports(char* filename, WINDOW_DATA *data)
 		goto cleanup4;
 	}
 
-	/* Find import table */
-	importFileOff = RvaToFileOffset(sections, FileHeader.NumberOfSections, importVa);
+	data->tabCount = tabIndex;
 
-	if (fseek(f, importFileOff, SEEK_SET))
+
+	DWORD exportVa = 0;
+	DWORD exportSize = 0;
+	if (Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
 	{
-		/* No import table */
+		IMAGE_OPTIONAL_HEADER32* OptionalHeader32 = (IMAGE_OPTIONAL_HEADER32*)OptionalHeader;
+		importVa = OptionalHeader32->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+		importSize = OptionalHeader32->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size;
+		exportVa = OptionalHeader32->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+		exportSize = OptionalHeader32->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
+	}
+	else if (Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+	{
+		IMAGE_OPTIONAL_HEADER64* OptionalHeader64 = (IMAGE_OPTIONAL_HEADER64*)OptionalHeader;
+		importVa = OptionalHeader64->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+		importSize = OptionalHeader64->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size;
+		exportVa = OptionalHeader64->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+		exportSize = OptionalHeader64->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
+	}
+	else
+	{
 		status = ST_PARSE_ERROR;
 		goto cleanup4;
 	}
 
-	IMAGE_IMPORT_DESCRIPTOR *descriptors = malloc(importSize);
-	if (!descriptors)
+	if (importSize != 0)
 	{
-		status = ST_MEMORY_ERROR;
-		goto cleanup4;
+		status = LoadImports(f, importVa, importSize, data, sections, FileHeader.NumberOfSections, Magic);
+		if (status) 
+		{
+			goto cleanup4;
+		}
 	}
 
-	if (fread(descriptors, importSize, 1, f) < 1)
+	if (exportSize != 0)
 	{
-		/* Could not read import descriptors */
-		status = ST_PARSE_ERROR;
-		goto cleanup5;
+		status = LoadExports(f, exportVa, exportSize, data, sections, FileHeader.NumberOfSections, Magic);
+		if (status)
+		{
+			goto cleanup4;
+		}
 	}
-
-	for (int i = 0; i < (importSize / sizeof(IMAGE_IMPORT_DESCRIPTOR)); i++)
-	{
-		if (descriptors[i].Characteristics == 0)
-		{
-			break;
-		}
-
-		DWORD offset = RvaToFileOffset(sections, FileHeader.NumberOfSections, descriptors[i].Name);
-
-		char name[256] = { 0 };
-		wchar_t namew[256] = { 0 };
-		int ii = 0;
-
-		if (fseek(f, offset, SEEK_SET))
-		{
-			status = ST_PARSE_ERROR;
-			goto cleanup5;
-		}
-
-		while (ii < 256 && fread(&name[ii], 1, 1, f) == 1 && name[ii] != 0)
-		{
-			ii++;
-		}
-		
-		MultiByteToWideChar(
-			CP_ACP,          
-			0,               
-			name,
-			strlen(name),              
-			namew,         
-			256                
-		);
-
-		IMAGE_IMPORT_DESCRIPTOR* copy = malloc(sizeof(IMAGE_IMPORT_DESCRIPTOR));
-		if (!copy)
-		{
-			status = ST_MEMORY_ERROR;
-			goto cleanup5;
-		}
-		memcpy(copy, &descriptors[i], sizeof(IMAGE_IMPORT_DESCRIPTOR));
-
-		TREE_ITEM* tItem = malloc(sizeof(TREE_ITEM));
-		if (!tItem)
-		{
-			status = ST_MEMORY_ERROR;
-			free(copy);
-			goto cleanup5;
-		}
-
-		tItem->Type = Import;
-		tItem->Data = copy;
-
-		TVINSERTSTRUCT imp = {0};
-		imp.hParent = data->treeRoot;
-		imp.hInsertAfter = TVI_FIRST;
-		imp.item.mask = TVIF_TEXT | TVIF_PARAM;
-		imp.item.pszText = namew;
-		imp.item.cchTextMax = lstrlenW(namew);
-		imp.item.lParam = tItem;
-
-		HTREEITEM himp = SendMessage(data->tree, TVM_INSERTITEM, 0, &imp);
-
-		DWORD iatOffset = RvaToFileOffset(sections, FileHeader.NumberOfSections, descriptors[i].OriginalFirstThunk);
-		if (fseek(f, iatOffset, SEEK_SET))
-		{
-			status = ST_PARSE_ERROR;
-			free(copy);
-			free(tItem);
-			goto cleanup5;
-		}
-
-
-		void *thunks = NULL;
-		int thunkIndex = 0;
-		if (Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
-		{
-			thunks = malloc(sizeof(IMAGE_THUNK_DATA32) * 256);
-			if (!thunks)
-			{
-				status = ST_MEMORY_ERROR;
-				goto cleanup5;
-			}
-
-			while (
-				thunkIndex < 256 &&
-				fread(&((IMAGE_THUNK_DATA32*)thunks)[thunkIndex], sizeof(IMAGE_THUNK_DATA32), 1, f) == 1 &&
-				((IMAGE_THUNK_DATA32*)thunks)[thunkIndex].u1.AddressOfData != 0
-				)
-			{
-				IMAGE_THUNK_DATA32* copy = malloc(sizeof(IMAGE_THUNK_DATA32));
-				if (!copy)
-				{
-					status = ST_MEMORY_ERROR;
-					free(thunks);
-					goto cleanup5;
-				}
-				memcpy(copy, &((IMAGE_THUNK_DATA32*)thunks)[thunkIndex], sizeof(IMAGE_THUNK_DATA32));
-
-				TREE_ITEM* tItem = malloc(sizeof(TREE_ITEM));
-				if (!tItem)
-				{
-					free(copy);
-					free(thunks);
-					status = ST_MEMORY_ERROR;
-					goto cleanup5;
-				}
-
-				tItem->Type = Thunk32;
-				tItem->Data = copy;
-
-				if ((((IMAGE_THUNK_DATA32*)thunks)[thunkIndex].u1.Ordinal >> 31) == 1)
-				{
-					/* Imported by ordinal */
-					int ordinal = ((IMAGE_THUNK_DATA32*)thunks)[thunkIndex].u1.AddressOfData & 0xFFFF;
-					wchar_t importNameW[256] = { 0 };
-
-					swprintf(importNameW, 256, L"- #%u", ordinal);
-
-					TVINSERTSTRUCT name = { 0 };
-					name.hParent = himp;
-					name.hInsertAfter = TVI_FIRST;
-					name.item.mask = TVIF_TEXT | TVIF_PARAM;
-					name.item.pszText = importNameW;
-					name.item.cchTextMax = lstrlenW(importNameW);
-					name.item.lParam = tItem;
-
-					SendMessage(data->tree, TVM_INSERTITEM, 0, &name);
-
-				}
-				else
-				{
-					/* Imported by name */
-					int nameRva = ((IMAGE_THUNK_DATA32*)thunks)[thunkIndex].u1.AddressOfData & 0x3FFFFFFF;
-					DWORD importNameOffset = RvaToFileOffset(sections, FileHeader.NumberOfSections, nameRva) + 2; // + 2 Hint
-
-					char importName[256] = { 0 };
-					wchar_t importNameW[256] = { 0 };
-					int importNameIndex = 0;
-
-					if (fseek(f, importNameOffset, SEEK_SET))
-					{
-						status = ST_PARSE_ERROR;
-						free(copy);
-						free(thunks);
-						free(tItem);
-						goto cleanup5;
-					}
-
-					while (importNameIndex < 256 && fread(&importName[importNameIndex], 1, 1, f) == 1 && importName[importNameIndex] != 0)
-					{
-						importNameIndex++;
-					}
-
-					/* Reset file pointer for next thunk */
-					if (fseek(f, iatOffset + thunkIndex * sizeof(IMAGE_THUNK_DATA32), SEEK_SET))
-					{
-						status = ST_PARSE_ERROR;
-						free(copy);
-						free(thunks);
-						free(tItem);
-						goto cleanup5;
-					}
-
-
-					MultiByteToWideChar(
-						CP_ACP,
-						0,
-						importName,
-						strlen(importName),
-						importNameW,
-						256
-					);
-
-					wchar_t res[256] = { 0 };
-					swprintf(res, 256, L"- %s", importNameW);
-
-					TVINSERTSTRUCT name = { 0 };
-					name.hParent = himp;
-					name.hInsertAfter = TVI_FIRST;
-					name.item.mask = TVIF_TEXT | TVIF_PARAM;
-					name.item.pszText = importNameW;
-					name.item.cchTextMax = lstrlenW(importNameW);
-					name.item.lParam = tItem;
-
-					SendMessage(data->tree, TVM_INSERTITEM, 0, &name);
-
-				}
-
-				thunkIndex++;
-			}
-		}
-		else if (Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
-		{
-			thunks = malloc(sizeof(IMAGE_THUNK_DATA64) * 256);
-			if (!thunks)
-			{
-				status = ST_MEMORY_ERROR;
-				goto cleanup5;
-			}
-
-			while (
-				thunkIndex < 256 &&
-				fread(&((IMAGE_THUNK_DATA64*)thunks)[thunkIndex], sizeof(IMAGE_THUNK_DATA64), 1, f) == 1 &&
-				((IMAGE_THUNK_DATA64*)thunks)[thunkIndex].u1.AddressOfData != 0
-				)
-			{
-				IMAGE_THUNK_DATA64* copy = malloc(sizeof(IMAGE_THUNK_DATA64));
-				if (!copy)
-				{
-					status = ST_MEMORY_ERROR;
-					free(thunks);
-					goto cleanup5;
-				}
-				memcpy(copy, &((IMAGE_THUNK_DATA64*)thunks)[thunkIndex], sizeof(IMAGE_THUNK_DATA64));
-
-				TREE_ITEM* tItem = malloc(sizeof(TREE_ITEM));
-				if (!tItem)
-				{
-					free(copy);
-					free(thunks);
-					status = ST_MEMORY_ERROR;
-					goto cleanup5;
-				}
-
-				tItem->Type = Thunk64;
-				tItem->Data = copy;
-
-				if ((((IMAGE_THUNK_DATA64*)thunks)[thunkIndex].u1.Ordinal >> 63) == 1)
-				{
-					/* Imported by ordinal */
-					int ordinal = ((IMAGE_THUNK_DATA64*)thunks)[thunkIndex].u1.AddressOfData & 0xFFFF;
-					wchar_t importNameW[256] = { 0 };
-
-					swprintf(importNameW, 256, L"- #%u", ordinal);
-
-					TVINSERTSTRUCT name = { 0 };
-					name.hParent = himp;
-					name.hInsertAfter = TVI_FIRST;
-					name.item.mask = TVIF_TEXT | TVIF_PARAM;
-					name.item.pszText = importNameW;
-					name.item.cchTextMax = lstrlenW(importNameW);
-					name.item.lParam = tItem;
-
-					SendMessage(data->tree, TVM_INSERTITEM, 0, &name);
-
-				}
-				else
-				{
-					/* Imported by name */
-					int nameRva = ((IMAGE_THUNK_DATA64*)thunks)[thunkIndex].u1.AddressOfData & 0x3FFFFFFF;
-					DWORD importNameOffset = RvaToFileOffset(sections, FileHeader.NumberOfSections, nameRva) + 2; // + 2 Hint
-
-					char importName[256] = { 0 };
-					wchar_t importNameW[256] = { 0 };
-					int importNameIndex = 0;
-
-					if (fseek(f, importNameOffset, SEEK_SET))
-					{
-						status = ST_PARSE_ERROR;
-						free(copy);
-						free(thunks);
-						free(tItem);
-						goto cleanup5;
-					}
-
-					while (importNameIndex < 256 && fread(&importName[importNameIndex], 1, 1, f) == 1 && importName[importNameIndex] != 0)
-					{
-						importNameIndex++;
-					}
-
-					/* Reset file pointer for next thunk */
-					if (fseek(f, iatOffset + thunkIndex * sizeof(IMAGE_THUNK_DATA64), SEEK_SET))
-					{
-						status = ST_PARSE_ERROR;
-						free(copy);
-						free(thunks);
-						free(tItem);
-						goto cleanup5;
-					}
-
-
-					MultiByteToWideChar(
-						CP_ACP,
-						0,
-						importName,
-						strlen(importName),
-						importNameW,
-						256
-					);
-
-					wchar_t res[256] = { 0 };
-					swprintf(res, 256, L"- %s", importNameW);
-
-					TVINSERTSTRUCT name = { 0 };
-					name.hParent = himp;
-					name.hInsertAfter = TVI_FIRST;
-					name.item.mask = TVIF_TEXT | TVIF_PARAM;
-					name.item.pszText = importNameW;
-					name.item.cchTextMax = lstrlenW(importNameW);
-					name.item.lParam = tItem;
-
-					SendMessage(data->tree, TVM_INSERTITEM, 0, &name);
-
-				}
-
-				thunkIndex++;
-			}
-		}
-		else
-		{
-			free(copy);
-			free(tItem);
-			goto cleanup5;
-		}
-
-		free(thunks);
-	}
-
-cleanup5:
-	free(descriptors);
 
 cleanup4:
 	free(sections);
@@ -734,7 +1012,7 @@ cleanup1:
 
 }
 
-void FreeTreeViewUserData(HWND tree, HTREEITEM root)
+void FreeImportTVUserData(HWND tree, HTREEITEM root)
 {
 	if (!root)
 	{
@@ -763,7 +1041,7 @@ void FreeTreeViewUserData(HWND tree, HTREEITEM root)
 		HTREEITEM child = SendMessage(tree, TVM_GETNEXTITEM, TVGN_CHILD, root);
 		if (child)
 		{
-			FreeTreeViewUserData(tree, child);
+			FreeImportTVUserData(tree, child);
 		}
 
 		root = SendMessage(tree, TVM_GETNEXTITEM, TVGN_NEXT, root);
@@ -831,6 +1109,7 @@ int ApplyWindowStyle(WINDOW_DATA *data)
 	return 0;
 }
 
+
 int ShowContextMenu(HWND hwnd, POINT p)
 {
 	HMENU menu = CreatePopupMenu();
@@ -853,6 +1132,11 @@ int ShowContextMenu(HWND hwnd, POINT p)
 	}
 
 	return option;
+}
+
+void FreeCurrentImageState(WINDOW_DATA *data)
+{
+
 }
 
 LRESULT Wndproc(
@@ -909,14 +1193,14 @@ LRESULT Wndproc(
 
 		TCITEM tab = { 0 };
 		tab.mask = TCIF_TEXT;
-		tab.pszText = L"PE header";
-
+		tab.pszText = L"File header";
 		SendMessage(data->tabs, TCM_INSERTITEM, 0, &tab);
 
-		tab.pszText = L".idata";
+		tab.pszText = L"Sections";
 		SendMessage(data->tabs, TCM_INSERTITEM, 1, &tab);
 		
 		SendMessage(data->tabs, TCM_ADJUSTRECT, FALSE, &clientRect);
+		data->crect = clientRect;
 
 		data->headerListView = CreateWindow(
 			WC_LISTVIEW,
@@ -935,13 +1219,13 @@ LRESULT Wndproc(
 		LVCOLUMN nameColumn = { 0 };
 		nameColumn.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
 		nameColumn.pszText = L"Property";
-		nameColumn.cx = 150;
+		nameColumn.cx = 400;
 		ListView_InsertColumn(data->headerListView, 0, &nameColumn);
 
 		LVCOLUMN valueColumn = { 0 };
 		valueColumn.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
 		valueColumn.pszText = L"Value";
-		valueColumn.cx = 150;
+		valueColumn.cx = 300;
 		ListView_InsertColumn(data->headerListView, 1, &valueColumn);
 
 		ListView_SetExtendedListViewStyle(data->headerListView, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
@@ -950,8 +1234,8 @@ LRESULT Wndproc(
 			L"STATIC",
 			L"Drop an executable file on to the window.",
 			WS_CHILD | WS_VISIBLE | SS_CENTER,
-			100,
-			200,
+			(clientRect.right - 300) / 2,
+			(clientRect.bottom - 30) / 2,
 			300,
 			30,
 			unnamedParam1,
@@ -960,25 +1244,21 @@ LRESULT Wndproc(
 			NULL);
 
 
-		data->tree = CreateWindow(
+		data->sectionTree = CreateWindow(
 			WC_TREEVIEW,
 			NULL,
 			WS_CHILD | WS_BORDER | TVS_HASLINES | TVS_LINESATROOT | TVS_HASBUTTONS,
 			clientRect.left,
 			clientRect.top,
-			clientRect.right - clientRect.left,  
-			clientRect.bottom - clientRect.top, 
+			clientRect.right - clientRect.left,
+			clientRect.bottom - clientRect.top,
 			unnamedParam1,
-			IDC_IMPORT_TREEVIEW,
+			IDC_SECTION_TREEVIEW,
 			GetWindowLongPtr(unnamedParam1, GWLP_HINSTANCE),
 			NULL);
 
-		SetWindowTheme(data->tree, L"", L"");
-
-
 
 		SetWindowLongPtr(unnamedParam1, GWLP_USERDATA, data);
-
 
 		DragAcceptFiles(unnamedParam1, TRUE);
 
@@ -995,7 +1275,8 @@ LRESULT Wndproc(
 			SetSysColors(4, elements, data->oldColors);
 		}
 
-		FreeTreeViewUserData(data->tree, data->treeRoot);
+		// TODO: free tabs
+		FreeImportTVUserData(data->dirTree[1], data->dirTreeRoot[1]);
 		free(data);
 
 		PostQuitMessage(0);
@@ -1005,7 +1286,10 @@ LRESULT Wndproc(
 
 	case WM_NOTIFY:
 	{
+		WINDOW_DATA* data = GetWindowLongPtr(unnamedParam1, GWLP_USERDATA);
+
 		if (((LPNMHDR)unnamedParam4)->idFrom == IDC_MAIN_TABS && ((LPNMHDR)unnamedParam4)->code == TCN_SELCHANGE) {
+
 			int tab = SendMessage(((LPNMHDR)unnamedParam4)->hwndFrom, TCM_GETCURSEL, 0, 0);
 
 			switch (tab)
@@ -1013,23 +1297,69 @@ LRESULT Wndproc(
 			case 0:
 			{
 				ShowWindow(GetDlgItem(unnamedParam1, IDC_HEADER_LISTVIEW), SW_SHOW);
-				ShowWindow(GetDlgItem(unnamedParam1, IDC_IMPORT_TREEVIEW), SW_HIDE);
+
+				ShowWindow(GetDlgItem(unnamedParam1, IDC_SECTION_TREEVIEW), SW_HIDE);
+				for (int i = 0; i < data->tabCount; i++)
+				{
+					ShowWindow(GetDlgItem(unnamedParam1, data->tabIndexes[i]), SW_HIDE);
+				}
 				break;
 			}
 			case 1:
 			{
-				ShowWindow(GetDlgItem(unnamedParam1, IDC_IMPORT_TREEVIEW), SW_SHOW);
+				ShowWindow(GetDlgItem(unnamedParam1, IDC_SECTION_TREEVIEW), SW_SHOW);
+
 				ShowWindow(GetDlgItem(unnamedParam1, IDC_HEADER_LISTVIEW), SW_HIDE);
+				for (int i = 0; i < data->tabCount; i++)
+				{
+					ShowWindow(GetDlgItem(unnamedParam1, data->tabIndexes[i]), SW_HIDE);
+				}
 				break;
 			}
+			default:
+			{
+				ShowWindow(GetDlgItem(unnamedParam1, data->tabIndexes[tab - 2]), SW_SHOW);
 
+				ShowWindow(GetDlgItem(unnamedParam1, IDC_HEADER_LISTVIEW), SW_HIDE);
+				ShowWindow(GetDlgItem(unnamedParam1, IDC_SECTION_TREEVIEW), SW_HIDE);
+
+				for (int i = 0; i < data->tabCount; i++)
+				{
+					if (i == (tab - 2))
+					{
+						continue;
+					}
+					ShowWindow(GetDlgItem(unnamedParam1, data->tabIndexes[i]), SW_HIDE);
+				}
+				break;
+			}
 			}
 		}
 
+		if (((LPNMHDR)unnamedParam4)->idFrom == IDC_HEADER_LISTVIEW && ((LPNMHDR)unnamedParam4)->code == NM_CLICK)
+		{
+			POINT p;
+			GetCursorPos(&p);
+
+			POINT pClient = p;
+			ScreenToClient(((LPNMHDR)unnamedParam4)->hwndFrom, &pClient);
+
+			HeadersNotify(pClient, p, data, ((LPNMHDR)unnamedParam4)->hwndFrom);
+		}
+
+		if (((LPNMHDR)unnamedParam4)->idFrom == IDC_SECTION_TREEVIEW && ((LPNMHDR)unnamedParam4)->code == NM_RCLICK)
+		{
+			POINT p;
+			GetCursorPos(&p);
+
+			POINT pClient = p;
+			ScreenToClient(((LPNMHDR)unnamedParam4)->hwndFrom, &pClient);
+
+			SectionsNotify(pClient, p, data, ((LPNMHDR)unnamedParam4)->hwndFrom);
+		}
 
 		if (((LPNMHDR)unnamedParam4)->idFrom == IDC_IMPORT_TREEVIEW && ((LPNMHDR)unnamedParam4)->code == NM_RCLICK)
 		{
-
 			POINT p;
 			GetCursorPos(&p);
 
@@ -1172,32 +1502,77 @@ LRESULT Wndproc(
 
 		DragFinish((HDROP)unnamedParam3);
 
+		wchar_t title[512] = { 0 };
+		swprintf(title, 512, L"DWM test (%S)", file);
+		SetWindowTextW(data->main, title);
 
-
-		if (data->treeRoot)
+		FreeHeaderLVUserData(data->headerListView);
+		SendMessage(data->headerListView, LVM_DELETEALLITEMS, 0, 0);
+		
+		if (data->sectionTreeRoot)
 		{
-			FreeTreeViewUserData(data->tree, data->treeRoot);
-			SendMessage(data->tree, TVM_DELETEITEM, 0, data->treeRoot);
+			FreeSectionTVUserData(data->sectionTree, data->sectionTreeRoot);
+			SendMessage(data->sectionTree, TVM_DELETEITEM, 0, data->sectionTreeRoot);
+		}
+
+		for (int i = 0; i < 16; i++)
+		{
+			if (data->dirTreeRoot[i])
+			{
+				FreeImportTVUserData(data->dirTree[i], data->dirTreeRoot[i]);
+			}
+		}
+
+		for (int i = 0; i < data->tabCount; i++)
+		{
+			SendMessage(data->tabs, TCM_DELETEITEM, 2, 0);
+
+			DestroyWindow(GetDlgItem(data->main, data->tabIndexes[i])); 
 		}
 
 		TVINSERTSTRUCT root = { 0 };
 		root.hParent = TVI_ROOT;
 		root.hInsertAfter = TVI_FIRST;
 		root.item.mask = TVIF_TEXT | TVIF_STATE;
-		root.item.pszText = L".idata";
-		root.item.cchTextMax = lstrlenW(L".idata");
 		root.item.state = TVIS_EXPANDED;
 		root.item.stateMask = TVIS_EXPANDED;
+		root.item.pszText = L"Sections";
+		root.item.cchTextMax = lstrlenW(L"Sections");
+		data->sectionTreeRoot = SendMessage(data->sectionTree, TVM_INSERTITEM, 0, &root);
 
-		data->treeRoot = SendMessage(data->tree, TVM_INSERTITEM, 0, &root);
 
 		int status = ReadImports(file, data);
+
+		SendMessage(data->tabs, TCM_SETCURSEL, 0, 0);
+
 
 
 		if (status)
 		{
-			FreeTreeViewUserData(data->tree, data->treeRoot);
-			SendMessage(data->tree, TVM_DELETEITEM, 0, data->treeRoot);
+
+			FreeHeaderLVUserData(data->headerListView);
+			SendMessage(data->headerListView, LVM_DELETEALLITEMS, 0, 0);
+
+			if (data->sectionTreeRoot)
+			{
+				FreeSectionTVUserData(data->sectionTree, data->sectionTreeRoot);
+				SendMessage(data->sectionTree, TVM_DELETEITEM, 0, data->sectionTreeRoot);
+			}
+
+			for (int i = 0; i < 16; i++)
+			{
+				if (data->dirTreeRoot[i])
+				{
+					FreeImportTVUserData(data->dirTree[i], data->dirTreeRoot[i]);
+				}
+			}
+
+			for (int i = 0; i < data->tabCount; i++)
+			{
+				SendMessage(data->tabs, TCM_DELETEITEM, 2, 0);
+
+				DestroyWindow(GetDlgItem(data->main, data->tabIndexes[i]));
+			}
 
 			switch (status)
 			{
@@ -1283,7 +1658,7 @@ int WinMain(
 		style,
 		CW_USEDEFAULT,
 		CW_USEDEFAULT,
-		500,
+		800,
 		500,
 		NULL,
 		NULL,
